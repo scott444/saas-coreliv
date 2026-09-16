@@ -1,4 +1,4 @@
-import type { Home, HomeSystem, Reading, SystemEvent, SystemState } from '@/domain'
+import type { Home, HomeSystem, Reading, SystemEvent, SystemHardware, SystemState } from '@/domain'
 import type { HomeSystemsService } from '../types'
 import type { ApiClient } from '../apiClient'
 
@@ -14,5 +14,7 @@ export function createMockHomeSystemsService(client: ApiClient): HomeSystemsServ
     sendCommand: (systemId, command) => client.post<SystemState>(`/systems/${systemId}/commands`, command),
     getHistory: (systemId, range = '24h') => client.get<Reading[]>(`/systems/${systemId}/history?range=${range}`),
     getEvents: (systemId) => client.get<SystemEvent[]>(`/systems/${systemId}/events`),
+    getHardware: (systemId) => client.get<SystemHardware | null>(`/systems/${systemId}/hardware`),
+    updateHardware: (systemId, input) => client.put<SystemHardware>(`/systems/${systemId}/hardware`, input),
   }
 }

@@ -7,12 +7,14 @@ import type {
   Subscription,
   SystemCommand,
   SystemEvent,
+  SystemHardware,
   SystemState,
   User,
 } from '@/domain'
 import {
   seedCurrentUser,
   seedEvents,
+  seedHardware,
   seedHomes,
   seedOrganization,
   seedStates,
@@ -32,6 +34,8 @@ interface MockDb {
   systems: HomeSystem[]
   states: Record<string, SystemState>
   events: SystemEvent[]
+  /** Keyed by system id; a system with no entry has no hardware record yet. */
+  hardware: Record<string, SystemHardware>
 }
 
 function clone<T>(value: T): T {
@@ -47,6 +51,7 @@ function createDb(): MockDb {
     systems: clone(seedSystems),
     states: clone(seedStates),
     events: clone(seedEvents),
+    hardware: clone(seedHardware),
   }
 }
 

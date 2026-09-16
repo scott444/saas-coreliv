@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import type { HistoryRange, SystemCommand, SystemState } from '@/domain'
+import type { HistoryRange, SystemCommand, SystemHardware, SystemHardwareInput, SystemState } from '@/domain'
 import { reduceCommand } from '@/domain/reduceCommand'
 import { useServices } from '@/app/ServicesProvider'
 import { queryKeys } from '@/app/queryKeys'
@@ -48,6 +48,33 @@ export function useSystemEvents(systemId: string) {
   return useQuery({
     queryKey: queryKeys.systems.events(systemId),
     queryFn: () => homeSystems.getEvents(systemId),
+  })
+}
+
+/**
+ * The hardware record is an asset document, not telemetry - it only changes
+ * when someone edits it, so it is cached far longer than live state.
+ */
+export function useSystemHardware(systemId: string) {
+  const { homeSystems } = useServices()
+  return useQuery({
+    queryKey: queryKeys.systems.hardware(systemId),
+    queryFn: () => homeSystems.getHardware(systemId),
+    staleTime: 5 * 60_000,
+  })
+}
+
+export function useSaveSystemHardware(systemId: string) {
+  const { homeSystems } = useServices()
+  const queryClient = useQueryClient()
+
+  return useMutation<SystemHardware, ServiceError, SystemHardwareInput>({
+    mutationFn: (input) => homeSystems.updateHardware(systemId, input),
+    onSuccess: (hardware) => {
+      queryClient.setQueryData(queryKeys.systems.hardware(systemId), hardware)
+      // The mock backend logs an event for the edit, as a real audit trail would.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.systems.events(systemId) })
+    },
   })
 }
 

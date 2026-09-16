@@ -9,6 +9,8 @@ import type {
   Subscription,
   SystemCommand,
   SystemEvent,
+  SystemHardware,
+  SystemHardwareInput,
   SystemState,
   User,
 } from '@/domain'
@@ -29,6 +31,7 @@ export interface FakeWorld {
   homes: Home[]
   systems: HomeSystem[]
   states: Record<string, SystemState>
+  hardware: Record<string, SystemHardware>
   /** Return an error to make sendCommand reject for a given command. */
   rejectCommand?: (systemId: string, command: SystemCommand) => ServiceError | null
 }
@@ -46,6 +49,7 @@ export function createFakeWorld(overrides: Partial<FakeWorld> = {}): FakeWorld {
     states: {
       s1: { type: 'Heating', currentTemp: 18, targetTemp: 21, mode: 'Heat', isHeating: true, humidity: 40 },
     },
+    hardware: {},
     ...overrides,
   }
 }
@@ -127,6 +131,12 @@ export function createFakeServices(world: FakeWorld = createFakeWorld()): Servic
     },
     getHistory: async (): Promise<Reading[]> => [],
     getEvents: async (): Promise<SystemEvent[]> => [],
+    getHardware: async (systemId) => world.hardware[systemId] ?? null,
+    updateHardware: async (systemId: string, input: SystemHardwareInput) => {
+      const record: SystemHardware = { systemId, ...input }
+      world.hardware[systemId] = record
+      return record
+    },
   }
 
   return { auth, organizations, billing, homeSystems }

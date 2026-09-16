@@ -11,6 +11,7 @@ import { SystemStatusBadge, SystemTypeIcon } from '@/components/systems/SystemMe
 import { SystemControls } from '@/components/systems/SystemControls'
 import { HistoryChart } from '@/components/systems/HistoryChart'
 import { EventList } from '@/components/systems/EventList'
+import { HardwareCard } from '@/components/systems/HardwareCard'
 import { PageHeader } from '@/components/layout/PageHeader'
 
 export function SystemDetailPage() {
@@ -85,6 +86,8 @@ export function SystemDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      <HardwareCard systemId={s.id} />
 
       <Card>
         <CardHeader>

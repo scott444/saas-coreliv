@@ -13,6 +13,8 @@ import type {
   Subscription,
   SystemCommand,
   SystemEvent,
+  SystemHardware,
+  SystemHardwareInput,
   SystemState,
   User,
 } from '@/domain'
@@ -53,6 +55,9 @@ export interface HomeSystemsService {
   sendCommand(systemId: string, command: SystemCommand): Promise<SystemState>
   getHistory(systemId: string, range?: HistoryRange): Promise<Reading[]>
   getEvents(systemId: string): Promise<SystemEvent[]>
+  /** Null when no hardware record has been entered for the system yet. */
+  getHardware(systemId: string): Promise<SystemHardware | null>
+  updateHardware(systemId: string, input: SystemHardwareInput): Promise<SystemHardware>
 }
 
 export interface Services {

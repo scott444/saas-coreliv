@@ -6,6 +6,7 @@ import type {
   Plan,
   Subscription,
   SystemEvent,
+  SystemHardware,
   SystemState,
   User,
 } from '@/domain'
@@ -159,6 +160,91 @@ export const seedStates: Record<string, SystemState> = {
     cycleProgress: 0,
     remainingMinutes: null,
     powerDrawWatts: 0,
+  },
+}
+
+// ---------- Hardware ----------
+
+/** Calendar date `offsetDays` from today, as "YYYY-MM-DD" in local time. */
+function dateOffset(offsetDays: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() + offsetDays)
+  return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-')
+}
+
+/**
+ * Keyed by system id. `sys-city-dryer` is deliberately absent so the
+ * "not recorded yet" state is visible without editing anything, and the
+ * warranty dates are relative to today so every badge state stays reachable:
+ * lake-heat active, lake-cool expiring, lake-sauna expired.
+ */
+export const seedHardware: Record<string, SystemHardware> = {
+  'sys-lake-heat': {
+    systemId: 'sys-lake-heat',
+    manufacturer: 'Nibe',
+    model: 'F1255-12 R',
+    serialNumber: 'NB-06621-448713',
+    installedAt: '2021-09-14',
+    warrantyExpiresAt: dateOffset(430),
+    firmwareVersion: '9412R6',
+    installer: 'Sigtuna VVS & Värme AB',
+    notes: 'Brine circuit topped up at the 2025 service. Filter housing is behind the stair panel.',
+  },
+  'sys-lake-cool': {
+    systemId: 'sys-lake-cool',
+    manufacturer: 'Mitsubishi Electric',
+    model: 'MSZ-LN35VG2V',
+    serialNumber: 'ME-7714-220913',
+    installedAt: '2022-06-02',
+    warrantyExpiresAt: dateOffset(38),
+    firmwareVersion: '2.4.1',
+    installer: 'Kyla Nord AB',
+    notes: null,
+  },
+  'sys-lake-irrig': {
+    systemId: 'sys-lake-irrig',
+    manufacturer: 'Hunter Industries',
+    model: 'Pro-HC 601i-E',
+    serialNumber: 'HU-PHC-0099421',
+    installedAt: '2023-04-19',
+    warrantyExpiresAt: null,
+    firmwareVersion: '4.08',
+    installer: null,
+    notes: 'Orchard drip line valve has been intermittent since spring 2026 - replacement quoted.',
+  },
+  'sys-lake-sauna': {
+    systemId: 'sys-lake-sauna',
+    manufacturer: 'Harvia',
+    model: 'Cilindro PC90E',
+    serialNumber: 'HV-90E-118204',
+    installedAt: '2018-11-30',
+    warrantyExpiresAt: dateOffset(-215),
+    firmwareVersion: null,
+    installer: 'Bastuteknik i Uppland',
+    notes: 'Out of warranty. Over-temperature cutoff has tripped twice; element set is original.',
+  },
+  'sys-city-heat': {
+    systemId: 'sys-city-heat',
+    manufacturer: 'Danfoss',
+    model: 'Ally Gateway + Ally Radiator',
+    serialNumber: 'DF-ALLY-553102',
+    installedAt: '2024-02-08',
+    warrantyExpiresAt: dateOffset(146),
+    firmwareVersion: '1.16',
+    installer: null,
+    notes: null,
+  },
+  'sys-city-washer': {
+    systemId: 'sys-city-washer',
+    manufacturer: 'Miele',
+    model: 'WWD 660 WCS',
+    // Some devices genuinely have no serial the owner can reach.
+    serialNumber: '',
+    installedAt: '2025-05-21',
+    warrantyExpiresAt: dateOffset(612),
+    firmwareVersion: null,
+    installer: null,
+    notes: null,
   },
 }
 

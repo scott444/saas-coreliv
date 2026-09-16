@@ -32,10 +32,10 @@ src/
     ui/         shadcn-style primitives (button, card, dialog, select, ...)
     layout/     AppShell, Sidebar, OrgSwitcher, UserMenu, PageHeader
     states/     LoadingState, ErrorState, EmptyState
-    systems/    SystemCard, SystemControls + per-type controls, HistoryChart, EventList
+    systems/    SystemCard, SystemControls + per-type controls, HistoryChart, EventList, HardwareCard
     billing/    BillingStatusBanner, PlanCard
     homes/, organization/
-  domain/       Provider-agnostic models (User, Organization, Plan, Home, HomeSystem, SystemState, SystemCommand, Reading)
+  domain/       Provider-agnostic models (User, Organization, Plan, Home, HomeSystem, SystemState, SystemCommand, Reading, SystemHardware)
   hooks/        TanStack Query hooks; the only place components touch services
   services/
     types.ts    AuthService, OrganizationService, BillingService, HomeSystemsService interfaces
@@ -69,6 +69,7 @@ so the UI exercises genuine async, latency and error paths:
   - Starting the irrigation zone `zone-orchard` always fails with `command_failed` (valve did not respond).
   - Subscription is seeded **PastDue**; cancel it and every command fails with `subscription_expired` (402).
   - Inviting an existing email, changing the owner's role, or removing the owner return validation errors.
+  - `sys-city-dryer` has **no hardware record**, so the empty state on the hardware card is visible without editing anything.
 - Mutable state lives in `src/mocks/db.ts` and is reset between tests with `resetDb()`.
 - Mock checkout and portal "redirect" to `/billing/return?...` inside the app; the handlers update the subscription
   as a real provider webhook would.
@@ -79,6 +80,35 @@ non-transient codes.
 
 Commands use **optimistic updates**: `useSendCommand` applies `reduceCommand()` to the cached state immediately,
 replaces it with the server response on success, and restores the snapshot (plus shows a toast) on failure.
+
+## Hardware tracking
+
+Each system has an optional **hardware record** - the asset document for the physical device:
+manufacturer, model, serial number, install date, warranty end, firmware version, installer and free-text notes.
+It shows on the system detail page and is edited in place.
+
+It is a **separate resource** from `HomeSystem`, not extra fields on it, because the two change on completely
+different clocks: `HomeSystem.status` is telemetry polled every few seconds, while this changes only when an
+engineer visits. Keeping them apart means the dashboard's frequent system list stays small, the record is cached
+for minutes rather than seconds (`useSystemHardware`), and a system can exist with no hardware recorded yet -
+`getHardware` returns `null`, which the card renders as an empty state rather than an error.
+
+| Endpoint | Purpose |
+| -------- | ------- |
+| `GET /systems/:id/hardware` | The record, or `null` when none has been entered |
+| `PUT /systems/:id/hardware` | Upsert. Requires manufacturer and model; rejects a warranty end before the install date |
+
+Two derived values live in `src/domain/hardware.ts` as pure functions, so they are unit-testable and stay out of
+the components: `warrantySummary()` (`active` / `expiring` within 60 days / `expired` / `unknown`, plus days
+remaining) and `monthsInService()`.
+
+Install and warranty dates are **calendar dates** (`"YYYY-MM-DD"`), not timestamps. Both helpers compare them as
+UTC day numbers so a DST boundary between two dates cannot shift the count, and `formatDateOnly()` parses the
+parts by hand rather than passing a bare date to `new Date(...)`, which reads it as UTC midnight and renders the
+previous day for anyone behind UTC.
+
+Saving a record writes a `Hardware details updated` event, so edits show in the system's event list the way a
+real audit trail would.
 
 ## Adding an http implementation of a service
 
@@ -119,6 +149,8 @@ src/components/systems/controls/HeatingControls.test.tsx   presentational contro
 src/components/systems/SystemControls.test.tsx             optimistic update and rollback through the hook
 src/components/billing/BillingStatusBanner.test.tsx        banner states + connected render via MSW
 src/test/serviceBoundary.test.tsx                          swapped service implementation, no network
+src/domain/hardware.test.ts                                warranty windows and service age, incl. a DST boundary
+src/components/systems/HardwareCard.test.tsx               hardware read, first-time entry and edit, via MSW
 ```
 
 ## Docker

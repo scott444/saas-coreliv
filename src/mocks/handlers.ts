@@ -1,5 +1,5 @@
 import { HttpResponse, delay, http } from 'msw'
-import type { AuthSession, HistoryRange, HomeInput, Member, Role, SystemCommand } from '@/domain'
+import type { AuthSession, HistoryRange, HomeInput, Member, Role, SystemCommand, SystemHardware, SystemHardwareInput } from '@/domain'
 import type { ApiErrorBody, ServiceErrorCode } from '@/services/errors'
 import { seedPlans } from './data/seed'
 import { generateHistory } from './data/history'
@@ -38,6 +38,21 @@ function makeSession(): AuthSession {
     accessToken: `mock-token-${Date.now().toString(36)}`,
     expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
   }
+}
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+
+/** Trim to a string, or null for blank/absent - hardware fields are all optional text. */
+function optionalText(value: unknown): string | null {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return text === '' ? null : text
+}
+
+function optionalDate(value: unknown): string | null | 'invalid' {
+  const text = optionalText(value)
+  if (text === null) return null
+  if (!DATE_ONLY.test(text) || Number.isNaN(Date.parse(text))) return 'invalid'
+  return text
 }
 
 // ---------- handlers ----------
@@ -273,6 +288,49 @@ export const handlers = [
     if (!system) return error('not_found', 'System not found', 404)
     const range = (new URL(request.url).searchParams.get('range') ?? '24h') as HistoryRange
     return HttpResponse.json(generateHistory(system.id, system.type, range === '7d' ? '7d' : '24h'))
+  }),
+
+  http.get(api('/systems/:systemId/hardware'), async ({ params }) => {
+    await latency()
+    const id = String(params.systemId)
+    if (!db.systems.some((s) => s.id === id)) return error('not_found', 'System not found', 404)
+    // 200 with a null body: the system exists, its hardware just was not recorded.
+    return HttpResponse.json(db.hardware[id] ?? null)
+  }),
+
+  http.put(api('/systems/:systemId/hardware'), async ({ params, request }) => {
+    await latency()
+    const id = String(params.systemId)
+    if (!db.systems.some((s) => s.id === id)) return error('not_found', 'System not found', 404)
+
+    const body = (await request.json()) as Partial<SystemHardwareInput>
+    const manufacturer = optionalText(body.manufacturer)
+    const model = optionalText(body.model)
+    if (!manufacturer) return error('validation', 'Manufacturer is required', 400)
+    if (!model) return error('validation', 'Model is required', 400)
+
+    const installedAt = optionalDate(body.installedAt)
+    if (installedAt === 'invalid') return error('validation', 'Install date must be a valid date', 400)
+    const warrantyExpiresAt = optionalDate(body.warrantyExpiresAt)
+    if (warrantyExpiresAt === 'invalid') return error('validation', 'Warranty end must be a valid date', 400)
+    if (installedAt && warrantyExpiresAt && warrantyExpiresAt < installedAt) {
+      return error('validation', 'Warranty cannot end before the install date', 400)
+    }
+
+    const record: SystemHardware = {
+      systemId: id,
+      manufacturer,
+      model,
+      serialNumber: optionalText(body.serialNumber) ?? '',
+      installedAt,
+      warrantyExpiresAt,
+      firmwareVersion: optionalText(body.firmwareVersion),
+      installer: optionalText(body.installer),
+      notes: optionalText(body.notes),
+    }
+    db.hardware[id] = record
+    pushEvent(id, 'info', 'Hardware details updated')
+    return HttpResponse.json(record)
   }),
 
   http.get(api('/systems/:systemId/events'), async ({ params }) => {

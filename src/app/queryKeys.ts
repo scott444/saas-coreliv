@@ -22,5 +22,6 @@ export const queryKeys = {
     state: (systemId: string) => ['systems', systemId, 'state'] as const,
     history: (systemId: string, range: HistoryRange) => ['systems', systemId, 'history', range] as const,
     events: (systemId: string) => ['systems', systemId, 'events'] as const,
+    hardware: (systemId: string) => ['systems', systemId, 'hardware'] as const,
   },
 }
