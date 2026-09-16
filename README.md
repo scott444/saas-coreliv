@@ -121,6 +121,58 @@ src/components/billing/BillingStatusBanner.test.tsx        banner states + conne
 src/test/serviceBoundary.test.tsx                          swapped service implementation, no network
 ```
 
+## Docker
+
+```bash
+docker compose up --build web          # http://localhost:8080  production build behind nginx
+docker compose --profile dev up dev    # http://localhost:5173  Vite dev server with HMR
+```
+
+`Dockerfile` is multi-stage:
+
+| Stage | Base | What it is |
+| ----- | ---- | ---------- |
+| `deps` | `node:22-alpine` | `npm ci` once, shared by the two stages below |
+| `dev` | `node:22-alpine` | Vite dev server on `:5173`; compose bind-mounts your working tree over `/app` and keeps the image's `node_modules` in an anonymous volume |
+| `build` | `node:22-alpine` | `npm run build` (runs `tsc -b` first, so a type error fails the image build) |
+| `runtime` | `nginxinc/nginx-unprivileged:1.29-alpine` | ~83 MB; serves `dist/` as non-root `uid 101` on `:8080` |
+
+### Build-time vs runtime config
+
+Vite **inlines `VITE_*` at build time**, so they are build args, not container env vars — setting
+`VITE_API_BASE_URL` on a running container does nothing. Point the image at a real backend by rebuilding:
+
+```bash
+docker build -t coreliv:prod \
+  --build-arg VITE_DATA_MODE=http \
+  --build-arg VITE_API_BASE_URL=https://api.example.com .
+```
+
+Through compose, the same two values are read from your shell or `.env` and forwarded as build args
+(`VITE_DATA_MODE`, `VITE_API_BASE_URL`), alongside `WEB_PORT` / `DEV_PORT` for host port mapping.
+`.env` is excluded from the build context so local values never land in an image.
+
+If you need one image promoted across environments instead of one build per environment, the usual fix is to
+read the API base from a small `/config.json` fetched at startup rather than from `import.meta.env`. That is a
+source change in `createServices()`, not a Docker change.
+
+### nginx behaviour
+
+`docker/nginx.conf` serves the SPA: unknown paths fall back to `index.html` so client-side routes like
+`/billing/return` work on refresh, `/assets/*` (content-hashed) is `immutable` for a year while `index.html`
+and the MSW worker always revalidate, and a missing `/assets/*` file returns 404 rather than the HTML shell.
+`/healthz` returns `200 ok` and backs the image's `HEALTHCHECK`.
+
+Cache headers come from a `map` and all `add_header` directives sit at server level on purpose — nginx skips
+inherited `add_header`s in any `location` that declares one of its own, which silently drops the security
+headers.
+
+### Note on the dev container
+
+`docker-compose.yml` sets `VITE_USE_POLLING=true`, which switches the Vite watcher to polling
+(`vite.config.ts`). Bind-mounted source does not deliver inotify events from a Windows or macOS host, so
+without it HMR never fires. On a native Linux host you can drop it and use the cheaper default watcher.
+
 ## Environment
 
 ```

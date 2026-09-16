@@ -1,0 +1,34 @@
+services:
+  # Production image: built bundle served by nginx.
+  #   docker compose up --build web   ->  http://localhost:8080
+  web:
+    build:
+      context: .
+      target: runtime
+      args:
+        # Vite inlines these at build time - change them and rebuild.
+        VITE_DATA_MODE: ${VITE_DATA_MODE:-mock}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    image: coreliv:latest
+    ports:
+      - "${WEB_PORT:-8082}:8080"
+    restart: unless-stopped
+
+  # Vite dev server with HMR against your working tree.
+  #   docker compose --profile dev up dev  ->  http://localhost:5173
+  dev:
+    profiles: ["dev"]
+    build:
+      context: .
+      target: dev
+    image: coreliv-dev:latest
+    ports:
+      - "${DEV_PORT:-5173}:5173"
+    environment:
+      # Bind-mounted source on Windows/macOS does not deliver inotify events,
+      # so the watcher polls instead. Set to false on native Linux.
+      VITE_USE_POLLING: "true"
+    volumes:
+      - .:/app
+      # Keep the image's node_modules; do not let the host's shadow it.
+      - /app/node_modules

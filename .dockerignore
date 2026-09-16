@@ -1,0 +1,25 @@
+# Build context hygiene: keep the image small and keep local secrets out of it.
+node_modules
+dist
+dist-ssr
+coverage
+
+.git
+.gitignore
+.gitattributes
+.github
+
+# Never bake local env files into an image. VITE_* values are supplied as
+# build args (see Dockerfile) because Vite inlines them at build time.
+.env
+.env.*
+!.env.example
+
+Dockerfile
+.dockerignore
+docker-compose.yml
+README.md
+*.local
+.DS_Store
+.vscode
+.idea
