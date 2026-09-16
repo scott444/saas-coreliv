@@ -1,3 +1,5 @@
+import type { HomeSystem } from './system'
+
 /**
  * The physical device behind a HomeSystem: who made it, when it went in, and
  * what you would need to quote at a warranty desk.
@@ -92,4 +94,48 @@ export function monthsInService(
   // Not a full month yet if the day-of-month has not come round again.
   if (today.getUTCDate() < start.getUTCDate()) months -= 1
   return Math.max(0, months)
+}
+
+// ---------- Register (cross-home read model) ----------
+
+/**
+ * One row of the hardware register: a system, where it lives, and its record.
+ *
+ * A flattened read model rather than something the client joins together - the
+ * register spans every home in the org, so assembling it client-side would mean
+ * a query per home plus a query per system. `hardware` is null for a system
+ * nobody has documented yet, which the register exists to surface.
+ */
+export interface HardwareRegisterEntry {
+  system: HomeSystem
+  homeId: string
+  homeName: string
+  hardware: SystemHardware | null
+}
+
+export interface RegisterSummary {
+  total: number
+  documented: number
+  missing: number
+  expiringSoon: number
+  expired: number
+}
+
+export function summarizeRegister(entries: HardwareRegisterEntry[], now: number = Date.now()): RegisterSummary {
+  const summary: RegisterSummary = { total: entries.length, documented: 0, missing: 0, expiringSoon: 0, expired: 0 }
+
+  for (const entry of entries) {
+    if (!entry.hardware) {
+      summary.missing += 1
+      continue
+    }
+    summary.documented += 1
+    // A device with no warranty date recorded is not counted either way: we
+    // know nothing about its cover, which is different from knowing it lapsed.
+    const { state } = warrantySummary(entry.hardware, now)
+    if (state === 'expiring') summary.expiringSoon += 1
+    if (state === 'expired') summary.expired += 1
+  }
+
+  return summary
 }

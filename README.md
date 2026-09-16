@@ -34,6 +34,7 @@ src/
     states/     LoadingState, ErrorState, EmptyState
     systems/    SystemCard, SystemControls + per-type controls, HistoryChart, EventList, HardwareCard
     billing/    BillingStatusBanner, PlanCard
+    hardware/   HardwareRegisterTable, RegisterSummaryTiles, registerFilter (pure filter/sort)
     homes/, organization/
   domain/       Provider-agnostic models (User, Organization, Plan, Home, HomeSystem, SystemState, SystemCommand, Reading, SystemHardware)
   hooks/        TanStack Query hooks; the only place components touch services
@@ -97,6 +98,7 @@ for minutes rather than seconds (`useSystemHardware`), and a system can exist wi
 | -------- | ------- |
 | `GET /systems/:id/hardware` | The record, or `null` when none has been entered |
 | `PUT /systems/:id/hardware` | Upsert. Requires manufacturer and model; rejects a warranty end before the install date |
+| `GET /orgs/:orgId/hardware` | The register: every system in the org with its record, joined server-side |
 
 Two derived values live in `src/domain/hardware.ts` as pure functions, so they are unit-testable and stay out of
 the components: `warrantySummary()` (`active` / `expiring` within 60 days / `expired` / `unknown`, plus days
@@ -109,6 +111,27 @@ previous day for anyone behind UTC.
 
 Saving a record writes a `Hardware details updated` event, so edits show in the system's event list the way a
 real audit trail would.
+
+### The register
+
+`/hardware` lists every device across every home in the org, with summary tiles that double as filters
+(missing details / expiring soon / out of warranty), a free-text search over manufacturer, model, serial and
+device name, and a per-home filter.
+
+It is served by **one** endpoint returning a flattened `HardwareRegisterEntry[]`. Assembling it client-side
+would have meant a query per home plus a query per system; the join belongs on the server. Systems with no
+record are included rather than filtered out - finding them is half the point of a register, so they render an
+"Add details" link through to the system page.
+
+The counts on the tiles describe the whole register, not the filtered view, because the tiles *are* the filter
+control and have to keep showing what there is to filter to. A device with no warranty end recorded is counted
+in neither the expiring nor the expired tile: unknown cover is not the same as lapsed cover, and the table
+spells that difference out - an undocumented system shows an em-dash, a documented one with no end date shows
+a `No end date` badge.
+
+Filtering and sorting live in `registerFilter.ts` as pure functions, so they are unit-tested directly rather
+than by driving the UI - opening a Radix select in jsdom costs about 14 seconds, which is not worth paying in
+the suite.
 
 ## Adding an http implementation of a service
 
@@ -151,6 +174,8 @@ src/components/billing/BillingStatusBanner.test.tsx        banner states + conne
 src/test/serviceBoundary.test.tsx                          swapped service implementation, no network
 src/domain/hardware.test.ts                                warranty windows and service age, incl. a DST boundary
 src/components/systems/HardwareCard.test.tsx               hardware read, first-time entry and edit, via MSW
+src/components/hardware/registerFilter.test.ts             register filtering, search and ordering (pure)
+src/pages/hardware/HardwareRegisterPage.test.tsx           register list, summary tiles as filters, search, via MSW
 ```
 
 ## Docker

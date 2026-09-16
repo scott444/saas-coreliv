@@ -12,6 +12,7 @@ import type {
   Role,
   Subscription,
   SystemCommand,
+  HardwareRegisterEntry,
   SystemEvent,
   SystemHardware,
   SystemHardwareInput,
@@ -58,6 +59,8 @@ export interface HomeSystemsService {
   /** Null when no hardware record has been entered for the system yet. */
   getHardware(systemId: string): Promise<SystemHardware | null>
   updateHardware(systemId: string, input: SystemHardwareInput): Promise<SystemHardware>
+  /** Every system in the org with its hardware record, including systems that have none. */
+  listHardwareRegister(orgId: string): Promise<HardwareRegisterEntry[]>
 }
 
 export interface Services {

@@ -1,10 +1,11 @@
 import { NavLink } from 'react-router-dom'
-import { CreditCard, Home, LayoutDashboard, Users } from 'lucide-react'
+import { Cpu, CreditCard, Home, LayoutDashboard, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/homes', label: 'Homes', icon: Home },
+  { to: '/hardware', label: 'Hardware', icon: Cpu },
   { to: '/organization', label: 'Organization', icon: Users },
   { to: '/billing', label: 'Billing', icon: CreditCard },
 ] as const

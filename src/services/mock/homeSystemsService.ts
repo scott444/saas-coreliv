@@ -1,4 +1,4 @@
-import type { Home, HomeSystem, Reading, SystemEvent, SystemHardware, SystemState } from '@/domain'
+import type { HardwareRegisterEntry, Home, HomeSystem, Reading, SystemEvent, SystemHardware, SystemState } from '@/domain'
 import type { HomeSystemsService } from '../types'
 import type { ApiClient } from '../apiClient'
 
@@ -16,5 +16,6 @@ export function createMockHomeSystemsService(client: ApiClient): HomeSystemsServ
     getEvents: (systemId) => client.get<SystemEvent[]>(`/systems/${systemId}/events`),
     getHardware: (systemId) => client.get<SystemHardware | null>(`/systems/${systemId}/hardware`),
     updateHardware: (systemId, input) => client.put<SystemHardware>(`/systems/${systemId}/hardware`, input),
+    listHardwareRegister: (orgId) => client.get<HardwareRegisterEntry[]>(`/orgs/${orgId}/hardware`),
   }
 }

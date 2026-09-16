@@ -74,7 +74,19 @@ export function useSaveSystemHardware(systemId: string) {
       queryClient.setQueryData(queryKeys.systems.hardware(systemId), hardware)
       // The mock backend logs an event for the edit, as a real audit trail would.
       void queryClient.invalidateQueries({ queryKey: queryKeys.systems.events(systemId) })
+      // The register shows this record too, and is keyed by org rather than system.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.hardware.all })
     },
+  })
+}
+
+/** Every system in the org with its hardware record - the register's single query. */
+export function useHardwareRegister(orgId: string) {
+  const { homeSystems } = useServices()
+  return useQuery({
+    queryKey: queryKeys.hardware.register(orgId),
+    queryFn: () => homeSystems.listHardwareRegister(orgId),
+    staleTime: 5 * 60_000,
   })
 }
 

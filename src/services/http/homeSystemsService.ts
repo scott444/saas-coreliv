@@ -16,5 +16,6 @@ export function createHttpHomeSystemsService(_client: ApiClient): HomeSystemsSer
     getEvents: () => notImplemented('HomeSystemsService', 'getEvents'),
     getHardware: () => notImplemented('HomeSystemsService', 'getHardware'),
     updateHardware: () => notImplemented('HomeSystemsService', 'updateHardware'),
+    listHardwareRegister: () => notImplemented('HomeSystemsService', 'listHardwareRegister'),
   }
 }

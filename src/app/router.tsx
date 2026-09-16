@@ -8,6 +8,7 @@ import { RegisterPage } from '@/pages/auth/RegisterPage'
 import { DashboardPage } from '@/pages/dashboard/DashboardPage'
 import { SystemDetailPage } from '@/pages/systems/SystemDetailPage'
 import { HomesPage } from '@/pages/homes/HomesPage'
+import { HardwareRegisterPage } from '@/pages/hardware/HardwareRegisterPage'
 import { OrganizationPage } from '@/pages/organization/OrganizationPage'
 import { BillingPage } from '@/pages/billing/BillingPage'
 import { BillingReturnPage } from '@/pages/billing/BillingReturnPage'
@@ -60,6 +61,7 @@ export const routes = [
           { index: true, element: <DashboardPage /> },
           { path: 'systems/:systemId', element: <SystemDetailPage /> },
           { path: 'homes', element: <HomesPage /> },
+          { path: 'hardware', element: <HardwareRegisterPage /> },
           { path: 'organization', element: <OrganizationPage /> },
           { path: 'billing', element: <BillingPage /> },
           { path: 'billing/return', element: <BillingReturnPage /> },

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { WARRANTY_EXPIRING_DAYS, monthsInService, warrantySummary } from './hardware'
+import type { HardwareRegisterEntry } from './hardware'
+import { WARRANTY_EXPIRING_DAYS, monthsInService, summarizeRegister, warrantySummary } from './hardware'
 
 /** Fixed "now": 2026-09-16, local noon so the local calendar day is unambiguous. */
 const NOW = new Date(2026, 8, 16, 12, 0, 0).getTime()
@@ -57,5 +58,58 @@ describe('monthsInService', () => {
 
   it('is null for a future install date, which has no age to report', () => {
     expect(monthsInService({ installedAt: '2027-01-01' }, NOW)).toBeNull()
+  })
+})
+
+describe('summarizeRegister', () => {
+  const system = (id: string): HardwareRegisterEntry['system'] => ({
+    id,
+    homeId: 'h1',
+    type: 'Heating',
+    name: id,
+    status: 'Online',
+  })
+
+  const entry = (id: string, warrantyExpiresAt: string | null | undefined): HardwareRegisterEntry => ({
+    system: system(id),
+    homeId: 'h1',
+    homeName: 'Home',
+    hardware:
+      warrantyExpiresAt === undefined
+        ? null
+        : {
+            systemId: id,
+            manufacturer: 'Acme',
+            model: 'M1',
+            serialNumber: '',
+            installedAt: null,
+            warrantyExpiresAt,
+            firmwareVersion: null,
+            installer: null,
+            notes: null,
+          },
+  })
+
+  it('counts an empty register as all zeroes', () => {
+    expect(summarizeRegister([], NOW)).toEqual({ total: 0, documented: 0, missing: 0, expiringSoon: 0, expired: 0 })
+  })
+
+  it('splits documented from undocumented systems', () => {
+    const summary = summarizeRegister([entry('a', '2027-09-16'), entry('b', undefined), entry('c', undefined)], NOW)
+    expect(summary).toMatchObject({ total: 3, documented: 1, missing: 2 })
+  })
+
+  it('counts each warranty state once', () => {
+    const summary = summarizeRegister(
+      [entry('a', '2027-09-16'), entry('b', '2026-10-01'), entry('c', '2025-01-01'), entry('d', '2024-06-30')],
+      NOW,
+    )
+    expect(summary).toMatchObject({ total: 4, documented: 4, missing: 0, expiringSoon: 1, expired: 2 })
+  })
+
+  it('leaves a documented device with no warranty date out of both warranty counts', () => {
+    // Unknown cover is not the same as lapsed cover.
+    const summary = summarizeRegister([entry('a', null)], NOW)
+    expect(summary).toEqual({ total: 1, documented: 1, missing: 0, expiringSoon: 0, expired: 0 })
   })
 })

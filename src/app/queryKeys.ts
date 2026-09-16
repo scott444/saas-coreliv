@@ -16,6 +16,10 @@ export const queryKeys = {
   homes: {
     list: (orgId: string) => ['orgs', orgId, 'homes'] as const,
   },
+  hardware: {
+    all: ['hardware'] as const,
+    register: (orgId: string) => ['hardware', 'register', orgId] as const,
+  },
   systems: {
     list: (homeId: string) => ['homes', homeId, 'systems'] as const,
     detail: (systemId: string) => ['systems', systemId] as const,

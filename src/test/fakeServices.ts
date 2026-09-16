@@ -1,5 +1,6 @@
 import type {
   AuthSession,
+  HardwareRegisterEntry,
   Home,
   HomeSystem,
   Member,
@@ -131,6 +132,13 @@ export function createFakeServices(world: FakeWorld = createFakeWorld()): Servic
     },
     getHistory: async (): Promise<Reading[]> => [],
     getEvents: async (): Promise<SystemEvent[]> => [],
+    listHardwareRegister: async (): Promise<HardwareRegisterEntry[]> =>
+      world.systems.map((system) => ({
+        system,
+        homeId: system.homeId,
+        homeName: world.homes.find((h) => h.id === system.homeId)?.name ?? '',
+        hardware: world.hardware[system.id] ?? null,
+      })),
     getHardware: async (systemId) => world.hardware[systemId] ?? null,
     updateHardware: async (systemId: string, input: SystemHardwareInput) => {
       const record: SystemHardware = { systemId, ...input }

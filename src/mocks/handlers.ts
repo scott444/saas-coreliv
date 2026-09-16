@@ -1,5 +1,15 @@
 import { HttpResponse, delay, http } from 'msw'
-import type { AuthSession, HistoryRange, HomeInput, Member, Role, SystemCommand, SystemHardware, SystemHardwareInput } from '@/domain'
+import type {
+  AuthSession,
+  HardwareRegisterEntry,
+  HistoryRange,
+  HomeInput,
+  Member,
+  Role,
+  SystemCommand,
+  SystemHardware,
+  SystemHardwareInput,
+} from '@/domain'
 import type { ApiErrorBody, ServiceErrorCode } from '@/services/errors'
 import { seedPlans } from './data/seed'
 import { generateHistory } from './data/history'
@@ -238,6 +248,22 @@ export const handlers = [
     db.homes = db.homes.filter((h) => h.id !== id)
     db.systems = db.systems.filter((s) => s.homeId !== id)
     return new HttpResponse(null, { status: 204 })
+  }),
+
+  // The cross-home register: one call instead of a query per home plus one per system.
+  http.get(api('/orgs/:orgId/hardware'), async ({ params }) => {
+    await latency()
+    if (!findOrg(String(params.orgId))) return error('not_found', 'Organization not found', 404)
+    const homesById = new Map(db.homes.map((h) => [h.id, h]))
+    const entries: HardwareRegisterEntry[] = db.systems
+      .filter((system) => homesById.has(system.homeId))
+      .map((system) => ({
+        system,
+        homeId: system.homeId,
+        homeName: homesById.get(system.homeId)?.name ?? '',
+        hardware: db.hardware[system.id] ?? null,
+      }))
+    return HttpResponse.json(entries)
   }),
 
   // Systems
