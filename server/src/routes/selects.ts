@@ -132,3 +132,39 @@ export const DOCUMENT_SELECT = `
     FROM documents d
     LEFT JOIN assets a ON a.id = d.asset_id
 `
+
+/**
+ * Vendor columns, shared so the `roles` cast below cannot be forgotten at a
+ * new call site.
+ *
+ * `roles` is `vendor_role[]` - an array of a user-defined enum. node-postgres
+ * ships array parsers keyed by built-in type OIDs only, so a user-defined
+ * enum's array OID is unknown to it and the value arrives as the raw literal
+ * `'{installer,service}'` rather than an array. `text[]` is a built-in, so
+ * casting hands the driver something it knows how to parse, and the enum
+ * labels are exactly the strings the domain type declares.
+ *
+ * `useCount` is deliberately not here: it is four correlated subqueries, and
+ * the asset page reads vendors on a path that does not need the number.
+ */
+export const VENDOR_COLUMNS = `
+  v.id,
+  v.name,
+  v.roles::text[] AS roles,
+  v.phone,
+  v.email,
+  v.website,
+  v.account_number AS "accountNumber",
+  v.notes
+`
+
+/**
+ * How much history points at a vendor. Their references are ON DELETE SET
+ * NULL, so this is what the UI shows before anyone confirms a delete.
+ */
+export const VENDOR_USE_COUNT = `(
+  (SELECT count(*)::int FROM assets a WHERE a.retailer_id = v.id OR a.installer_id = v.id)
+  + (SELECT count(*)::int FROM service_events e WHERE e.vendor_id = v.id)
+  + (SELECT count(*)::int FROM warranties w WHERE w.provider_id = v.id)
+  + (SELECT count(*)::int FROM maintenance_tasks t WHERE t.preferred_vendor_id = v.id)
+)`

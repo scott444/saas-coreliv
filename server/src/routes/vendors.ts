@@ -4,6 +4,7 @@ import type { Vendor } from '../../../src/domain/index.js'
 import { query, queryOne } from '../db/pool.js'
 import { assertWritable } from '../lib/limits.js'
 import { notFound } from '../lib/errors.js'
+import { VENDOR_COLUMNS, VENDOR_USE_COUNT } from './selects.js'
 import {
   idParams,
   nullableText,
@@ -27,22 +28,7 @@ const vendorInput = z.object({
   notes: nullableText,
 })
 
-/**
- * `useCount` is what makes deleting a vendor safe to offer: the references
- * themselves are ON DELETE SET NULL, so the UI shows how much history would
- * lose its attribution before anyone confirms.
- */
-const VENDOR_SELECT = `
-  SELECT v.id, v.name, v.roles, v.phone, v.email, v.website,
-         v.account_number AS "accountNumber", v.notes,
-         (
-           (SELECT count(*)::int FROM assets a WHERE a.retailer_id = v.id OR a.installer_id = v.id)
-           + (SELECT count(*)::int FROM service_events e WHERE e.vendor_id = v.id)
-           + (SELECT count(*)::int FROM warranties w WHERE w.provider_id = v.id)
-           + (SELECT count(*)::int FROM maintenance_tasks t WHERE t.preferred_vendor_id = v.id)
-         ) AS "useCount"
-    FROM vendors v
-`
+const VENDOR_SELECT = `SELECT ${VENDOR_COLUMNS}, ${VENDOR_USE_COUNT} AS "useCount" FROM vendors v`
 
 export async function vendorRoutes(app: FastifyInstance): Promise<void> {
   app.get('/orgs/:orgId/vendors', async (request): Promise<Vendor[]> => {

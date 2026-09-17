@@ -34,7 +34,15 @@ import {
   tags,
   uuid,
 } from './helpers.js'
-import { ASSET_SELECT, CONSUMABLE_SELECT, EVENT_SELECT, TASK_SELECT, WARRANTY_SELECT, DOCUMENT_SELECT } from './selects.js'
+import {
+  ASSET_SELECT,
+  CONSUMABLE_SELECT,
+  DOCUMENT_SELECT,
+  EVENT_SELECT,
+  TASK_SELECT,
+  VENDOR_COLUMNS,
+  WARRANTY_SELECT,
+} from './selects.js'
 
 // ---------------------------------------------------------------------------
 // Input shapes
@@ -873,11 +881,16 @@ export async function assetRoutes(app: FastifyInstance): Promise<void> {
   })
 }
 
+/**
+ * The retailer and installer shown on an asset page.
+ *
+ * Uses the shared columns - including the roles cast - rather than its own
+ * list; `useCount` is not worth four subqueries on this path, so it is
+ * reported as zero and the vendors page is where that number is shown.
+ */
 async function readVendor(vendorId: string): Promise<Vendor | null> {
   return queryOne<Vendor>(
-    `SELECT id, name, roles, phone, email, website, account_number AS "accountNumber", notes,
-            0 AS "useCount"
-       FROM vendors WHERE id = $1`,
+    `SELECT ${VENDOR_COLUMNS}, 0 AS "useCount" FROM vendors v WHERE v.id = $1`,
     [vendorId],
   )
 }
