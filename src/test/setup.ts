@@ -1,8 +1,6 @@
 import '@testing-library/jest-dom/vitest'
-import { afterAll, afterEach, beforeAll } from 'vitest'
+import { afterEach } from 'vitest'
 import { cleanup } from '@testing-library/react'
-import { server } from '@/mocks/server'
-import { resetDb } from '@/mocks/db'
 
 // ---- Browser API polyfills that jsdom lacks but Radix / Recharts expect ----
 class ResizeObserverStub {
@@ -30,12 +28,7 @@ if (!Element.prototype.hasPointerCapture) Element.prototype.hasPointerCapture = 
 if (!Element.prototype.releasePointerCapture) Element.prototype.releasePointerCapture = () => {}
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {}
 
-// ---- MSW lifecycle: the mock services in tests hit the same handlers as the browser ----
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(() => {
-  server.resetHandlers()
-  resetDb()
   localStorage.clear()
   cleanup()
 })
-afterAll(() => server.close())

@@ -1,4 +1,6 @@
 export * from './types'
 export * from './errors'
+export { ApiClient } from './apiClient'
+export { tokenStore } from './tokenStore'
 export { createServices } from './factory'
 export type { CreateServicesOptions } from './factory'

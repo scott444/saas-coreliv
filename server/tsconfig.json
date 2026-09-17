@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
+
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+
+    // rootDir is the repo root so the API and the SPA compile against one copy
+    // of src/domain. That is what puts the entrypoint at dist/server/src/index.js.
+    "rootDir": "..",
+    "outDir": "dist",
+    "sourceMap": true
+  },
+  "include": ["src/**/*.ts", "../src/domain/**/*.ts"],
+  // The domain's own tests belong to the front end's Vitest run, which
+  // resolves like a bundler; pulling them into this NodeNext program would
+  // demand .js extensions on imports the server never loads.
+  "exclude": ["**/*.test.ts", "../src/**/*.test.ts"]
+}

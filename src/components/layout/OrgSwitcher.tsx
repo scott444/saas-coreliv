@@ -32,7 +32,7 @@ export function OrgSwitcher() {
           {organizations.map((org) => (
             <DropdownMenuRadioItem key={org.id} value={org.id}>
               <span className="truncate">{org.name}</span>
-              <span className="ml-auto pl-2 text-xs text-muted-foreground">{org.members.length} members</span>
+              <span className="ml-auto pl-2 text-xs text-muted-foreground">{org.memberCount} members</span>
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>

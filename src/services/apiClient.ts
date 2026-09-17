@@ -54,11 +54,32 @@ export class ApiClient {
     if (response.status === 204) return undefined as T
 
     const text = await response.text()
-    const json: unknown = text ? JSON.parse(text) : null
+
+    // Not every response on this path is ours. A proxy timing out, a gateway
+    // error page, or an HTML shell served for a mistyped path all arrive here
+    // as non-JSON, and parsing them must not escape as a raw SyntaxError -
+    // the UI only knows how to react to a ServiceError.
+    let json: unknown = null
+    let parsed = true
+    if (text) {
+      try {
+        json = JSON.parse(text)
+      } catch {
+        parsed = false
+      }
+    }
 
     if (!response.ok) {
       if (isApiErrorBody(json)) throw new ServiceError(json.code, json.message, response.status)
-      throw new ServiceError('unknown', 'Request failed with status ' + response.status, response.status)
+      throw new ServiceError(
+        'unknown',
+        'Request failed with status ' + response.status,
+        response.status,
+      )
+    }
+
+    if (!parsed) {
+      throw new ServiceError('unknown', 'The server sent a response this app could not read', response.status)
     }
 
     return json as T

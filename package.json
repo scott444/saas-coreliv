@@ -3,13 +3,21 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "workspaces": [
+    "server"
+  ],
   "scripts": {
     "dev": "vite",
+    "dev:api": "npm run dev --workspace server",
     "build": "tsc -b && vite build",
+    "build:api": "npm run build --workspace server",
     "preview": "vite preview",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && npm run typecheck --workspace server",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "db:migrate": "npm run migrate --workspace server",
+    "db:seed": "npm run seed --workspace server",
+    "db:reset": "npm run reset --workspace server"
   },
   "dependencies": {
     "@radix-ui/react-avatar": "^1.1.10",
@@ -18,7 +26,6 @@
     "@radix-ui/react-label": "^2.1.7",
     "@radix-ui/react-select": "^2.2.6",
     "@radix-ui/react-separator": "^1.1.7",
-    "@radix-ui/react-slider": "^1.3.6",
     "@radix-ui/react-slot": "^1.2.3",
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tabs": "^1.1.13",
@@ -30,7 +37,6 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.30.1",
-    "recharts": "^2.15.4",
     "tailwind-merge": "^3.3.1"
   },
   "devDependencies": {
@@ -43,15 +49,9 @@
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^5.2.0",
     "jsdom": "^26.1.0",
-    "msw": "^2.11.3",
     "tailwindcss": "^4.1.13",
     "typescript": "~5.9.2",
     "vite": "^7.3.6",
     "vitest": "^3.2.4"
-  },
-  "msw": {
-    "workerDirectory": [
-      "public"
-    ]
   }
 }

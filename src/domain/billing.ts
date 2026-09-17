@@ -3,6 +3,8 @@ export interface Plan {
   name: string
   priceMonthly: number
   features: string[]
+  /** Null when the plan does not cap assets. */
+  assetLimit: number | null
 }
 
 export type SubscriptionStatus = 'Active' | 'PastDue' | 'Canceled' | 'Trialing'

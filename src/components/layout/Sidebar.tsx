@@ -1,11 +1,14 @@
 import { NavLink } from 'react-router-dom'
-import { Cpu, CreditCard, Home, LayoutDashboard, Users } from 'lucide-react'
+import { CalendarCheck, CreditCard, FileText, Home, LayoutDashboard, Package, Users, Wrench } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/homes', label: 'Homes', icon: Home },
-  { to: '/hardware', label: 'Hardware', icon: Cpu },
+  { to: '/assets', label: 'Register', icon: Package },
+  { to: '/maintenance', label: 'Maintenance', icon: CalendarCheck },
+  { to: '/documents', label: 'Documents', icon: FileText },
+  { to: '/properties', label: 'Properties', icon: Home },
+  { to: '/vendors', label: 'Vendors', icon: Wrench },
   { to: '/organization', label: 'Organization', icon: Users },
   { to: '/billing', label: 'Billing', icon: CreditCard },
 ] as const
@@ -30,7 +33,9 @@ export function Sidebar() {
             className={({ isActive }) =>
               cn(
                 'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                isActive ? 'bg-sidebar-accent text-sidebar-foreground' : 'text-sidebar-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
+                isActive
+                  ? 'bg-sidebar-accent text-sidebar-foreground'
+                  : 'text-sidebar-muted hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
               )
             }
           >
@@ -40,8 +45,8 @@ export function Sidebar() {
         ))}
       </nav>
       <div className="px-5 py-4 text-xs text-sidebar-muted">
-        <p>Mock data mode</p>
-        <p className="opacity-70">VITE_DATA_MODE=mock</p>
+        <p>Home asset record</p>
+        <p className="opacity-70">Every warranty, filter and service visit</p>
       </div>
     </div>
   )

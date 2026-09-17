@@ -1,7 +1,3 @@
-export function formatTemp(value: number): string {
-  return `${value.toFixed(1)}°C`
-}
-
 export function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }

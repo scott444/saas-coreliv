@@ -1,17 +1,63 @@
 services:
-  # Production image: built bundle served by nginx.
-  #   docker compose up --build web   ->  http://localhost:8080
+  # Postgres. The API migrates it on boot, so nothing else has to run first.
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-coreliv}
+      POSTGRES_USER: ${POSTGRES_USER:-coreliv}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coreliv}
+    ports:
+      # Exposed so `npm run dev:api` on the host can reach the same database
+      # the containers use. 5433 on the host by default: a machine with its
+      # own Postgres already holds 5432, and Docker's mapping loses to it.
+      - "${DB_PORT:-5433}:5432"
+    volumes:
+      - coreliv-db:/var/lib/postgresql/data
+    healthcheck:
+      # Without -d it checks the `postgres` database, which is ready before
+      # POSTGRES_DB has been created - the API would then start too early.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-coreliv} -d ${POSTGRES_DB:-coreliv}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # Fastify API on :3000.
+  #   docker compose up --build api
+  api:
+    build:
+      context: .
+      target: api
+    image: coreliv-api:latest
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-coreliv}:${POSTGRES_PASSWORD:-coreliv}@db:5432/${POSTGRES_DB:-coreliv}
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      NODE_ENV: production
+    ports:
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Production image: built bundle served by nginx, /api proxied to the API.
+  #   docker compose up --build web   ->  http://localhost:8082
   web:
     build:
       context: .
       target: runtime
       args:
-        # Vite inlines these at build time - change them and rebuild.
-        VITE_DATA_MODE: ${VITE_DATA_MODE:-mock}
+        # Vite inlines this at build time - change it and rebuild. Same-origin
+        # by default, because nginx proxies /api to the api service.
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
     image: coreliv:latest
     ports:
       - "${WEB_PORT:-8082}:8080"
+    depends_on:
+      api:
+        condition: service_started
     restart: unless-stopped
 
   # Vite dev server with HMR against your working tree.
@@ -28,7 +74,16 @@ services:
       # Bind-mounted source on Windows/macOS does not deliver inotify events,
       # so the watcher polls instead. Set to false on native Linux.
       VITE_USE_POLLING: "true"
+      # Where the Vite dev proxy forwards /api. Inside the network that is the
+      # api service; running Vite on the host it defaults to localhost:3000.
+      VITE_PROXY_TARGET: http://api:3000
+    depends_on:
+      api:
+        condition: service_started
     volumes:
       - .:/app
-      # Keep the image's node_modules; do not let the host's shadow it.
+      # Keep the image's node_modules; do not let the host's shadow them.
       - /app/node_modules
+
+volumes:
+  coreliv-db:

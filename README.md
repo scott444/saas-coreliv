@@ -1,238 +1,311 @@
 # Coreliv
 
-Multi-user SaaS front end for managing home systems: heating, cooling, irrigation and appliances.
-This phase is **UI only**. Everything is driven by placeholder data through a swappable service layer,
-so a real backend, auth provider and payment provider can be plugged in later without touching components.
+A record of everything in your house that has a make, model or serial worth writing down — the
+furnace, the water heater, the roof, the paint in the hallway — plus the warranties, filters,
+scheduled work and service history that hang off them.
+
+Multi-user and multi-property: an organization owns its properties, and everything else reaches an
+organization by walking up to one.
 
 ## Stack
 
-React 18 · TypeScript (strict) · Vite · React Router · TanStack Query · Tailwind v4 · shadcn/ui-style components ·
-Recharts · MSW · Vitest + React Testing Library
+React 18 · TypeScript (strict) · Vite · React Router · TanStack Query · Tailwind v4 · shadcn/ui-style
+components · Fastify · PostgreSQL 17 · Vitest + React Testing Library
 
 ## Running
 
 ```bash
+docker compose up --build        # db + api + web  ->  http://localhost:8082
+npm run db:seed                  # demo household (first run only)
+```
+
+Sign in as `dana@coreliv.app` / `coreliv-demo` (owner), or `sam@coreliv.app` / `coreliv-demo` (admin).
+
+For front-end work with hot reload, run the API and database in containers and Vite on the host:
+
+```bash
+docker compose up -d db api
 npm install
-npm run dev        # http://localhost:5173, mock data via MSW
-npm test           # vitest, single run
-npm run test:watch
-npm run typecheck  # tsc -b
-npm run build
+npm run dev                      # http://localhost:5173, /api proxied to :3000
 ```
 
-Sign in with any email and password. The seeded organization has one owner (you), two other members, two homes
-and seven systems with varied statuses, and a **past-due** subscription so the billing banner is visible immediately.
+Or run everything on the host:
 
-## Folder structure
+```bash
+docker compose up -d db
+cp .env.example .env
+npm run db:reset                 # drop, migrate, seed
+npm run dev:api                  # http://localhost:3000
+npm run dev                      # http://localhost:5173
+```
+
+| Command | What it does |
+| ------- | ------------ |
+| `npm run dev` | Vite dev server, `/api` proxied to the API |
+| `npm run dev:api` | Fastify with watch, via `tsx` |
+| `npm test` / `npm run test:watch` | Vitest |
+| `npm run typecheck` | `tsc -b` for the SPA, then the API |
+| `npm run build` / `npm run build:api` | Production bundle / compiled API |
+| `npm run db:migrate` · `db:seed` · `db:reset` | Migrations, demo data, both from scratch |
+
+> The database is published on **5433**, not 5432. A machine with its own Postgres already holds
+> 5432, and Docker's port mapping loses to it — you get `password authentication failed` against a
+> server that has nothing to do with this project.
+
+## Layout
 
 ```
+db/migrations/     0001 schema, 0002 category taxonomy + plans. Applied in order, once each.
+server/            Fastify + node-postgres API. Its own workspace.
+  src/auth/        Opaque bearer sessions, and the tenancy scoping helpers
+  src/routes/      One module per resource; selects.ts holds the shared SQL fragments
+  src/lib/         Error codes, scrypt password hashing, plan limits
 src/
-  app/          App shell wiring: providers, router, auth/org/theme contexts, query keys
-  components/
-    ui/         shadcn-style primitives (button, card, dialog, select, ...)
-    layout/     AppShell, Sidebar, OrgSwitcher, UserMenu, PageHeader
-    states/     LoadingState, ErrorState, EmptyState
-    systems/    SystemCard, SystemControls + per-type controls, HistoryChart, EventList, HardwareCard
-    billing/    BillingStatusBanner, PlanCard
-    hardware/   HardwareRegisterTable, RegisterSummaryTiles, registerFilter (pure filter/sort)
-    homes/, organization/
-  domain/       Provider-agnostic models (User, Organization, Plan, Home, HomeSystem, SystemState, SystemCommand, Reading, SystemHardware)
-  hooks/        TanStack Query hooks; the only place components touch services
-  services/
-    types.ts    AuthService, OrganizationService, BillingService, HomeSystemsService interfaces
-    errors.ts   ServiceError + error codes the UI reacts to
-    factory.ts  createServices() – picks an implementation from VITE_DATA_MODE
-    mock/       implementations that call /api/... (intercepted by MSW)
-    http/       stubs for the real backend (see below)
-  mocks/        MSW handlers, in-memory db, seed data
-  pages/        Route components
-  test/         Vitest setup, render helpers, an independent fake service implementation
+  domain/          Shared model and pure logic. Compiled by BOTH the SPA and the API.
+  services/        Interfaces + the http implementation. The UI's only view of the data layer.
+  hooks/           TanStack Query hooks; the only place components touch services
+  components/      ui/ primitives, then assets/, maintenance/, properties/, vendors/, layout/
+  pages/           Route components
+  test/            Vitest setup, render helper, the hand-written fake services
 ```
 
-## How the data layer works
+## The shared domain
 
-Components never call `fetch` or a vendor SDK. They use hooks in `src/hooks/`, which call the service interfaces from
-`src/services/types.ts` through the `useServices()` context. The concrete implementation is chosen once, in
-`createServices()`, from the `VITE_DATA_MODE` env flag:
+`src/domain/` is one copy of the model, compiled into both the API and the SPA. `server/tsconfig.json`
+sets `rootDir` to the repo root so the two programs share those files — which is why the compiled
+entrypoint lands at `dist/server/src/index.js`.
 
-| `VITE_DATA_MODE` | Implementation | Talks to |
-| ---------------- | -------------- | -------- |
-| `mock` (default) | `services/mock/` | `/api/...` REST endpoints served by MSW in the browser (`src/mocks/browser.ts`) and in tests (`src/mocks/server.ts`) |
-| `http`           | `services/http/` | your real backend at `VITE_API_BASE_URL` |
+That sharing is not only about types. Some logic genuinely has to give the same answer on both sides:
 
-The mock services are deliberately real HTTP clients. They go through the same `ApiClient` the http layer can use,
-so the UI exercises genuine async, latency and error paths:
+- `warrantySummary()` / `bestWarranty()` — the register's warranty badge is derived on the server
+  from the raw end dates, using the same function the asset page uses for a single warranty. One
+  definition of "in warranty", not two that drift.
+- `addInterval()` — the client-side twin of the database's `add_interval()`, including the same
+  end-of-month clamping, so a projected due date never disagrees with the one the API computed.
+- `dueStatus()`, `monthsInService()`, `lifecycleState()` — derived state the UI branches on.
 
-- Realistic latency (180–650 ms) in dev, zero in tests (`mockConfig` in `src/mocks/handlers.ts`).
-- Error cases baked into the seed:
-  - `sys-city-dryer` is **Offline** → state reads and commands fail with `device_offline` (503).
-  - `sys-lake-sauna` is in **Error** → commands fail with `command_failed` (409).
-  - Starting the irrigation zone `zone-orchard` always fails with `command_failed` (valve did not respond).
-  - Subscription is seeded **PastDue**; cancel it and every command fails with `subscription_expired` (402).
-  - Inviting an existing email, changing the owner's role, or removing the owner return validation errors.
-  - `sys-city-dryer` has **no hardware record**, so the empty state on the hardware card is visible without editing anything.
-- Mutable state lives in `src/mocks/db.ts` and is reset between tests with `resetDb()`.
-- Mock checkout and portal "redirect" to `/billing/return?...` inside the app; the handlers update the subscription
-  as a real provider webhook would.
+**Files in `src/domain/` must use explicit `.js` extensions on relative imports.** The SPA resolves
+like a bundler and does not care; the API is `moduleResolution: nodenext` and will not compile
+without them. It looks redundant in a `.ts` file — it is what lets one folder serve both.
 
-Errors arrive in components as `ServiceError` with a `code` (`unauthorized`, `not_found`, `validation`,
-`device_offline`, `command_failed`, `subscription_expired`, `network`, `unknown`). The query client does not retry the
-non-transient codes.
+## Data model
 
-Commands use **optimistic updates**: `useSendCommand` applies `reduceCommand()` to the cached state immediately,
-replaces it with the server response on success, and restores the snapshot (plus shows a toast) on failure.
+Adapted from `db.schema`, with two things added and two integrity gaps closed.
 
-## Hardware tracking
+**Added: identity and tenancy.** The original schema has no notion of who owns a property. `users`,
+`organizations`, `memberships`, `sessions`, `plans` and `subscriptions` are new, and
+`properties.org_id` is the anchor — every other table in the asset half reaches an organization by
+walking to a property, so scoping any read is a single join.
 
-Each system has an optional **hardware record** - the asset document for the physical device:
-manufacturer, model, serial number, install date, warranty end, firmware version, installer and free-text notes.
-It shows on the system detail page and is edited in place.
+**Added: plan limits.** `plans` carries `asset_limit`, `property_limit` and `member_limit`; the API
+enforces them on create.
 
-It is a **separate resource** from `HomeSystem`, not extra fields on it, because the two change on completely
-different clocks: `HomeSystem.status` is telemetry polled every few seconds, while this changes only when an
-engineer visits. Keeping them apart means the dashboard's frequent system list stays small, the record is cached
-for minutes rather than seconds (`useSystemHardware`), and a system can exist with no hardware recorded yet -
-`getHardware` returns `null`, which the card renders as an empty state rather than an error.
+**Closed: top-level category names.** `UNIQUE (parent_id, name)` does not constrain root rows —
+Postgres treats NULLs as distinct, so "Appliances" could be inserted twice at the top level. Two
+partial unique indexes cover both cases.
 
-| Endpoint | Purpose |
-| -------- | ------- |
-| `GET /systems/:id/hardware` | The record, or `null` when none has been entered |
-| `PUT /systems/:id/hardware` | Upsert. Requires manufacturer and model; rejects a warranty end before the install date |
-| `GET /orgs/:orgId/hardware` | The register: every system in the org with its record, joined server-side |
+**Closed: vendor scoping.** `vendors` had a global `UNIQUE (name)`. Vendors hold your account number
+with them, so they are per-organization: `UNIQUE (org_id, name)`.
 
-Two derived values live in `src/domain/hardware.ts` as pure functions, so they are unit-testable and stay out of
-the components: `warrantySummary()` (`active` / `expiring` within 60 days / `expired` / `unknown`, plus days
-remaining) and `monthsInService()`.
+### Why specs are JSONB
 
-Install and warranty dates are **calendar dates** (`"YYYY-MM-DD"`), not timestamps. Both helpers compare them as
-UTC day numbers so a DST boundary between two dates cannot shift the count, and `formatDateOnly()` parses the
-parts by hand rather than passing a bare date to `new Date(...)`, which reads it as UTC midnight and renders the
-previous day for anyone behind UTC.
+A furnace wants AFUE, fuel and stages; a roof wants material, layers and pitch. The union of every
+category's fields is dozens of columns that are null for almost every row. Instead, `assets.specs` is
+JSONB and each category carries a `spec_schema` describing its fields as
+`[{key, label, type, unit?, options?}]`.
 
-Saving a record writes a `Hardware details updated` event, so edits show in the system's event list the way a
-real audit trail would.
+One form component renders any category from that (`SpecFields`), and one read-only component renders
+it back (`SpecList`). Adding a category, or a field to one, is a migration — no component changes.
+`SpecList` also shows any key the category no longer declares, because losing data silently because a
+schema changed is worse than an unlabelled row.
 
-### The register
+### Dates are calendar dates
 
-`/hardware` lists every device across every home in the org, with summary tiles that double as filters
-(missing details / expiring soon / out of warranty), a free-text search over manufacturer, model, serial and
-device name, and a per-home filter.
+Install dates, warranty ends and due dates are `date`, not `timestamptz`, and they travel as
+`"YYYY-MM-DD"` strings end to end. `src/domain/dates.ts` compares them as UTC day numbers so a DST
+boundary between two dates cannot skew a day count.
 
-It is served by **one** endpoint returning a flattened `HardwareRegisterEntry[]`. Assembling it client-side
-would have meant a query per home plus a query per system; the join belongs on the server. Systems with no
-record are included rather than filtered out - finding them is half the point of a register, so they render an
-"Add details" link through to the system page.
+node-postgres would otherwise undo this: its default parser turns a `date` into a local-midnight
+`Date`, which serializes to the *previous* day for anyone behind UTC. `server/src/db/pool.ts`
+replaces that parser, along with the ones for `numeric` and `bigint`, which arrive as strings.
 
-The counts on the tiles describe the whole register, not the filtered view, because the tiles *are* the filter
-control and have to keep showing what there is to filter to. A device with no warranty end recorded is counted
-in neither the expiring nor the expired tile: unknown cover is not the same as lapsed cover, and the table
-spells that difference out - an undocumented system shows an em-dash, a documented one with no end date shows
-a `No end date` badge.
+### Never-done is not overdue
 
-Filtering and sorting live in `registerFilter.ts` as pure functions, so they are unit-tested directly rather
-than by driving the UI - opening a Radix select in jsdom costs about 14 seconds, which is not worth paying in
-the suite.
+The schema's `v_upcoming_due` view requires a last-done date to project from, so it drops anything
+that has never been done. But "you have never flushed the water heater" is exactly the item the list
+exists to surface. `/orgs/:orgId/due` therefore carries those rows through with a null `dueOn` and a
+distinct `unscheduled` status, and the UI gives them their own section — a task with no date has
+nothing to be late against, and telling someone their brand-new filter is overdue on day one trains
+them to ignore the list.
 
-## Adding an http implementation of a service
+The same distinction runs through warranties: `unknown` (nothing recorded) is a separate state from
+`expired` (cover has lapsed). They want different follow-up, so they never share a colour, and a
+register tile counts each separately.
 
-1. Implement the interface in `src/services/http/<name>Service.ts`. The `ApiClient` passed in already handles JSON,
-   bearer tokens (from `tokenStore`) and maps `{ code, message }` error bodies to `ServiceError`:
+## The API
 
-   ```ts
-   export function createHttpHomeSystemsService(client: ApiClient): HomeSystemsService {
-     return {
-       listHomes: (orgId) => client.get<Home[]>(`/orgs/${orgId}/homes`),
-       // ...
-     }
-   }
-   ```
+Fastify on `:3000`, everything under `/api`. Same-origin in every environment — the Vite dev server
+proxies it, and nginx proxies it in the container — so nothing in the app has to know which.
 
-   If the backend shape differs from the domain model, map it inside the service. If you use a vendor SDK
-   (auth provider, payment provider), call it here and ignore `client`. Keep the returned objects matching
-   `src/domain`.
+**Authentication** is an opaque bearer token, not a JWT. Nothing here needs stateless verification,
+and a table lookup buys revocation for free. Only the SHA-256 of the token is stored, so a dump of
+`sessions` does not hand over live logins. Passwords are scrypt with the parameters encoded into the
+hash, so they can be raised later without invalidating anything.
 
-2. Make sure the backend returns errors as `{ code, message }` with one of the `ServiceErrorCode` values, or
-   translate them in the service so the UI's error handling keeps working.
+Authentication is applied as **one `onRequest` hook**, not a per-route guard: a route added without a
+guard would otherwise be public by accident. New routes are private by default and have to be named
+in `PUBLIC_ROUTES` to opt out.
 
-3. `src/services/http/index.ts` already composes the four services; nothing else references them.
+**Tenancy** works the same way. Each resource declares its walk up to an organization once, in
+`server/src/auth/scope.ts`, and routes call `requireScope(request, 'warranty', id)` with the id they
+were given. Repeating those joins per route is where a cross-tenant read comes from. A record in
+someone else's organization returns **404, not 403** — confirming it exists is itself a leak.
 
-4. Run with `VITE_DATA_MODE=http VITE_API_BASE_URL=https://api.example.com npm run dev`. MSW is not started in
-   this mode.
+Ids that arrive in a *body* are checked too (`validateAssetRefs`). Scoping only the id in the path
+would still let a valid id from another account attach their vendor, or reparent their asset.
 
-5. You can migrate one service at a time: mix `createMock*` and `createHttp*` in `createHttpServices` while the
-   backend grows.
+**Errors** always leave as `{ code, message }`, including the ones Postgres and Zod raise, because the
+UI maps that shape onto `ServiceError` and branches on the code. The codes are `unauthorized`,
+`forbidden`, `not_found`, `validation`, `conflict`, `limit_exceeded`, `subscription_expired`,
+`network`, `unknown`.
 
-To keep the boundary honest, `src/test/serviceBoundary.test.tsx` renders the dashboard against a hand-written
-in-memory implementation (`src/test/fakeServices.ts`) with `fetch` disabled.
+`past_due` deliberately still writes. Dunning is a payment problem, and locking someone out of their
+own service history over a declined card is worse than carrying them a cycle; only an outright
+cancellation makes an account read-only.
+
+### Endpoints
+
+| | |
+| --- | --- |
+| `POST /api/auth/login` · `register` · `logout` · `refresh`, `GET /api/auth/me` | Sessions |
+| `GET /api/orgs`, `/orgs/:id/members`, `POST`/`PATCH`/`DELETE` members | Organizations |
+| `GET /api/billing/plans`, `/orgs/:id/subscription`, `POST .../checkout` · `portal` · `cancel` | Billing |
+| `GET`/`POST /api/orgs/:id/properties`, `PUT`/`DELETE /api/properties/:id` | Properties |
+| `.../locations`, `.../access-points` | Rooms and shutoffs |
+| `GET /api/orgs/:id/assets` | The register, joined server-side |
+| `GET /api/assets/:id` | Everything the asset page shows, in one request |
+| `POST /api/properties/:id/assets`, `PUT`/`DELETE /api/assets/:id` | Assets |
+| `.../warranties`, `.../consumables`, `.../events`, `.../documents`, `.../zones` | Sub-resources |
+| `GET /api/orgs/:id/due`, `POST /api/due/:type/:id/complete` | Maintenance |
+| `GET /api/orgs/:id/tasks` · `vendors` · `documents` · `replacement-plan` | Lists |
+
+`GET /api/assets/:id` returns the whole page in one request rather than one query per tab: the page is
+always opened whole, and six cache entries would all need invalidating after any edit.
+
+Completing a due item advances its date **and** appends a service record, in one transaction — a
+completion that left no trail would quietly reset the clock with nothing to show for it. Property-level
+work (gutters, a septic pump-out) has no asset to log against, so it advances its date without a
+record, and the dialog says so.
+
+### Billing is simulated
+
+There is no payment provider wired up. `checkout`, `portal` and `cancel` apply the same state
+transitions a provider's webhook would, minus the money, and hand back an in-app return URL. Swapping
+in Stripe means replacing the body of those three handlers and adding a webhook route; nothing else in
+the app reads a subscription any other way.
+
+## The data layer boundary
+
+Components never call `fetch`. They use hooks in `src/hooks/`, which call the interfaces in
+`src/services/types.ts` through `useServices()`. `createServices()` is the single composition point.
+
+There is one implementation now that the API lives in this repo. The seam stays because it is what
+lets `src/test/serviceBoundary.test.tsx` render whole pages against `src/test/fakeServices.ts` with
+`fetch` throwing — anything that reached past the interfaces to a URL, a header or the shape of a REST
+response fails there rather than in production.
+
+The register is fetched **once per organization** and filtered client-side in `registerFilter.ts`
+(pure, unit-tested). It is one small payload, and search that waits on a round trip feels broken at
+this size. The server still accepts the same filters as query parameters for when a register gets
+large enough to need them.
+
+## The register
+
+`/assets` lists every asset across every property, with summary tiles that double as filters, a search
+over make, model, serial, room and tags, and per-property and per-category filters.
+
+The tile counts describe the **whole** register, not the filtered view, because the tiles *are* the
+filter control — a tile reading zero because it was already applied would be a dead end.
+
+> The build output is served from `/static/`, not Vite's default `/assets/`. The app routes
+> `/assets/:assetId`, and nginx's `location /assets/ { try_files $uri =404; }` — which exists so a
+> missing hashed file fails loudly instead of being handed the HTML shell — swallowed every asset page
+> on a refresh.
 
 ## Tests
 
 ```
-src/components/systems/controls/HeatingControls.test.tsx   presentational controls emit the right commands
-src/components/systems/SystemControls.test.tsx             optimistic update and rollback through the hook
-src/components/billing/BillingStatusBanner.test.tsx        banner states + connected render via MSW
-src/test/serviceBoundary.test.tsx                          swapped service implementation, no network
-src/domain/hardware.test.ts                                warranty windows and service age, incl. a DST boundary
-src/components/systems/HardwareCard.test.tsx               hardware read, first-time entry and edit, via MSW
-src/components/hardware/registerFilter.test.ts             register filtering, search and ordering (pure)
-src/pages/hardware/HardwareRegisterPage.test.tsx           register list, summary tiles as filters, search, via MSW
+src/domain/dates.test.ts                    interval arithmetic, month clamping, due status
+src/domain/warranty.test.ts                 warranty windows, best-cover selection, DST boundary
+src/components/assets/registerFilter.test.ts filtering, search, tiles and ordering (pure)
+src/services/apiClient.test.ts              the wire: error-body mapping, 204, non-JSON responses
+src/pages/assets/AssetsPage.test.tsx        the register, driven through the tiles and search
+src/test/serviceBoundary.test.tsx           whole pages against swapped services, fetch disabled
 ```
+
+Component tests go through the service interfaces rather than a stubbed network, so they assert what
+the UI does with data, not how it was fetched. `apiClient.test.ts` is the one place that cares about
+the wire.
 
 ## Docker
 
-```bash
-docker compose up --build web          # http://localhost:8080  production build behind nginx
-docker compose --profile dev up dev    # http://localhost:5173  Vite dev server with HMR
-```
-
-`Dockerfile` is multi-stage:
-
 | Stage | Base | What it is |
 | ----- | ---- | ---------- |
-| `deps` | `node:22-alpine` | `npm ci` once, shared by the two stages below |
-| `dev` | `node:22-alpine` | Vite dev server on `:5173`; compose bind-mounts your working tree over `/app` and keeps the image's `node_modules` in an anonymous volume |
-| `build` | `node:22-alpine` | `npm run build` (runs `tsc -b` first, so a type error fails the image build) |
-| `runtime` | `nginxinc/nginx-unprivileged:1.29-alpine` | ~83 MB; serves `dist/` as non-root `uid 101` on `:8080` |
+| `deps` | `node:22-alpine` | `npm ci` once, both workspace manifests copied first so the layer caches on the lockfile |
+| `dev` | `node:22-alpine` | Vite dev server on `:5173`, source bind-mounted |
+| `api-build` | `node:22-alpine` | `tsc` for the API |
+| `api` | `node:22-alpine` | Fastify on `:3000`, production dependencies only |
+| `build` | `node:22-alpine` | `npm run build` (runs `tsc -b` first, so a type error fails the image) |
+| `runtime` | `nginxinc/nginx-unprivileged:1.29-alpine` | Serves `dist/`, proxies `/api` to the api service, non-root on `:8080` |
+
+npm workspaces hoist everything to the root `node_modules`; there is no per-workspace directory to
+copy into an image.
+
+The API **migrates on boot**, so `docker compose up` is a single step. Each migration runs in one
+transaction and the ledger is a table, so two replicas starting together cannot apply the same file
+twice. Set `MIGRATE_ON_BOOT=false` to turn it off.
 
 ### Build-time vs runtime config
 
-Vite **inlines `VITE_*` at build time**, so they are build args, not container env vars — setting
-`VITE_API_BASE_URL` on a running container does nothing. Point the image at a real backend by rebuilding:
-
-```bash
-docker build -t coreliv:prod \
-  --build-arg VITE_DATA_MODE=http \
-  --build-arg VITE_API_BASE_URL=https://api.example.com .
-```
-
-Through compose, the same two values are read from your shell or `.env` and forwarded as build args
-(`VITE_DATA_MODE`, `VITE_API_BASE_URL`), alongside `WEB_PORT` / `DEV_PORT` for host port mapping.
-`.env` is excluded from the build context so local values never land in an image.
-
-If you need one image promoted across environments instead of one build per environment, the usual fix is to
-read the API base from a small `/config.json` fetched at startup rather than from `import.meta.env`. That is a
-source change in `createServices()`, not a Docker change.
+Vite inlines `VITE_*` at build time, so `VITE_API_BASE_URL` is a build arg, not a container env var.
+It defaults to `/api`, which is same-origin and correct behind the bundled nginx; you only need to
+change it if the SPA is served from a different origin than the API — in which case set `CORS_ORIGINS`
+on the API too.
 
 ### nginx behaviour
 
-`docker/nginx.conf` serves the SPA: unknown paths fall back to `index.html` so client-side routes like
-`/billing/return` work on refresh, `/assets/*` (content-hashed) is `immutable` for a year while `index.html`
-and the MSW worker always revalidate, and a missing `/assets/*` file returns 404 rather than the HTML shell.
-`/healthz` returns `200 ok` and backs the image's `HEALTHCHECK`.
+`docker/nginx.conf` serves the SPA: unknown paths fall back to `index.html` so client-side routes work
+on refresh, `/static/*` is `immutable` for a year while `index.html` always revalidates, a missing
+`/static/*` file returns 404 rather than the HTML shell, and `/api/` is proxied to the api service with
+the prefix preserved.
 
-Cache headers come from a `map` and all `add_header` directives sit at server level on purpose — nginx skips
-inherited `add_header`s in any `location` that declares one of its own, which silently drops the security
-headers.
+Cache headers come from a `map` and all `add_header` directives sit at server level on purpose — nginx
+skips inherited `add_header`s in any `location` that declares one of its own, which silently drops the
+security headers.
 
 ### Note on the dev container
 
 `docker-compose.yml` sets `VITE_USE_POLLING=true`, which switches the Vite watcher to polling
-(`vite.config.ts`). Bind-mounted source does not deliver inotify events from a Windows or macOS host, so
-without it HMR never fires. On a native Linux host you can drop it and use the cheaper default watcher.
+(`vite.config.ts`). Bind-mounted source does not deliver inotify events from a Windows or macOS host,
+so without it HMR never fires. On a native Linux host you can drop it.
 
 ## Environment
 
+See `.env.example`. The API needs `DATABASE_URL`; everything else has a default.
+
 ```
-VITE_DATA_MODE=mock|http
-VITE_API_BASE_URL=/api
+DATABASE_URL=postgres://coreliv:coreliv@localhost:5433/coreliv
+PORT=3000
+SESSION_TTL_DAYS=30
+CORS_ORIGINS=              # only when the SPA is on a different origin
+VITE_API_BASE_URL=/api     # build-time
 ```
+
+## Not built yet
+
+- **Document uploads.** `storage_url` is a link the user supplies. Accepting files means a
+  presigned-URL endpoint and a size and type policy; the seam for it is `server/src/routes/documents.ts`.
+- **A real payment provider**, as above.
+- **Invitation emails.** Inviting creates a password-less user row and a membership immediately;
+  registering with that address later claims it. Nothing is sent.
+- **Recall checks.** The table and seed rows exist; nothing queries CPSC.

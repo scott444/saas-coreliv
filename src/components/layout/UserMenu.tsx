@@ -14,11 +14,13 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Badge } from '@/components/ui/badge'
 import { useAuth } from '@/app/AuthProvider'
+import { useOrg } from '@/app/OrgProvider'
 import { useTheme, type Theme } from '@/app/ThemeProvider'
 import { initials } from '@/lib/format'
 
 export function UserMenu() {
   const { user, logout } = useAuth()
+  const { currentOrg } = useOrg()
   const { theme, setTheme } = useTheme()
   const navigate = useNavigate()
 
@@ -38,9 +40,11 @@ export function UserMenu() {
         <DropdownMenuLabel className="font-normal">
           <p className="text-sm font-medium text-foreground">{user.name}</p>
           <p className="truncate text-xs">{user.email}</p>
-          <Badge variant="secondary" className="mt-2">
-            {user.role}
-          </Badge>
+          {currentOrg ? (
+            <Badge variant="secondary" className="mt-2">
+              {currentOrg.role} of {currentOrg.name}
+            </Badge>
+          ) : null}
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuLabel>Theme</DropdownMenuLabel>

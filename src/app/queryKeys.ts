@@ -1,5 +1,7 @@
-import type { HistoryRange } from '@/domain'
-
+/**
+ * Query keys are nested the way the data is owned, so invalidating an
+ * organization drops everything under it in one call.
+ */
 export const queryKeys = {
   auth: {
     me: ['auth', 'me'] as const,
@@ -13,19 +15,27 @@ export const queryKeys = {
     plans: ['billing', 'plans'] as const,
     subscription: (orgId: string) => ['orgs', orgId, 'subscription'] as const,
   },
-  homes: {
-    list: (orgId: string) => ['orgs', orgId, 'homes'] as const,
+  properties: {
+    list: (orgId: string) => ['orgs', orgId, 'properties'] as const,
+    locations: (propertyId: string) => ['properties', propertyId, 'locations'] as const,
+    accessPoints: (propertyId: string) => ['properties', propertyId, 'access-points'] as const,
   },
-  hardware: {
-    all: ['hardware'] as const,
-    register: (orgId: string) => ['hardware', 'register', orgId] as const,
+  assets: {
+    /** The whole register for an org, filtered client-side. */
+    register: (orgId: string) => ['orgs', orgId, 'assets'] as const,
+    detail: (assetId: string) => ['assets', assetId] as const,
+    replacement: (orgId: string) => ['orgs', orgId, 'replacement-plan'] as const,
+    // Global reference data: not under an org, and cached for the session.
+    categories: ['categories'] as const,
   },
-  systems: {
-    list: (homeId: string) => ['homes', homeId, 'systems'] as const,
-    detail: (systemId: string) => ['systems', systemId] as const,
-    state: (systemId: string) => ['systems', systemId, 'state'] as const,
-    history: (systemId: string, range: HistoryRange) => ['systems', systemId, 'history', range] as const,
-    events: (systemId: string) => ['systems', systemId, 'events'] as const,
-    hardware: (systemId: string) => ['systems', systemId, 'hardware'] as const,
+  maintenance: {
+    tasks: (orgId: string) => ['orgs', orgId, 'tasks'] as const,
+    due: (orgId: string) => ['orgs', orgId, 'due'] as const,
+  },
+  vendors: {
+    list: (orgId: string) => ['orgs', orgId, 'vendors'] as const,
+  },
+  documents: {
+    list: (orgId: string) => ['orgs', orgId, 'documents'] as const,
   },
 }

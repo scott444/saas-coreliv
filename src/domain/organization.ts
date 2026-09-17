@@ -1,14 +1,19 @@
-import type { Role, User } from './user'
+import type { Role, User } from './user.js'
 
 export interface Member extends User {
+  role: Role
   joinedAt: string
+  /** `Invited` until they accept; they hold no session until then. */
   status: 'Active' | 'Invited'
 }
 
 export interface Organization {
   id: string
   name: string
-  members: Member[]
+  /** The signed-in user's role in this organization. */
+  role: Role
+  memberCount: number
+  propertyCount: number
 }
 
 export interface InviteInput {

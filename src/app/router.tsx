@@ -6,9 +6,12 @@ import { LoadingState } from '@/components/states'
 import { LoginPage } from '@/pages/auth/LoginPage'
 import { RegisterPage } from '@/pages/auth/RegisterPage'
 import { DashboardPage } from '@/pages/dashboard/DashboardPage'
-import { SystemDetailPage } from '@/pages/systems/SystemDetailPage'
-import { HomesPage } from '@/pages/homes/HomesPage'
-import { HardwareRegisterPage } from '@/pages/hardware/HardwareRegisterPage'
+import { AssetsPage } from '@/pages/assets/AssetsPage'
+import { AssetDetailPage } from '@/pages/assets/AssetDetailPage'
+import { MaintenancePage } from '@/pages/maintenance/MaintenancePage'
+import { PropertiesPage } from '@/pages/properties/PropertiesPage'
+import { VendorsPage } from '@/pages/vendors/VendorsPage'
+import { DocumentsPage } from '@/pages/documents/DocumentsPage'
 import { OrganizationPage } from '@/pages/organization/OrganizationPage'
 import { BillingPage } from '@/pages/billing/BillingPage'
 import { BillingReturnPage } from '@/pages/billing/BillingReturnPage'
@@ -59,9 +62,12 @@ export const routes = [
         element: <AppShell />,
         children: [
           { index: true, element: <DashboardPage /> },
-          { path: 'systems/:systemId', element: <SystemDetailPage /> },
-          { path: 'homes', element: <HomesPage /> },
-          { path: 'hardware', element: <HardwareRegisterPage /> },
+          { path: 'assets', element: <AssetsPage /> },
+          { path: 'assets/:assetId', element: <AssetDetailPage /> },
+          { path: 'maintenance', element: <MaintenancePage /> },
+          { path: 'documents', element: <DocumentsPage /> },
+          { path: 'properties', element: <PropertiesPage /> },
+          { path: 'vendors', element: <VendorsPage /> },
           { path: 'organization', element: <OrganizationPage /> },
           { path: 'billing', element: <BillingPage /> },
           { path: 'billing/return', element: <BillingReturnPage /> },

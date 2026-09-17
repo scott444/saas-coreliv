@@ -1,9 +1,10 @@
 export type ServiceErrorCode =
   | 'unauthorized'
+  | 'forbidden'
   | 'not_found'
   | 'validation'
-  | 'device_offline'
-  | 'command_failed'
+  | 'conflict'
+  | 'limit_exceeded'
   | 'subscription_expired'
   | 'network'
   | 'unknown'

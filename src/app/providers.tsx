@@ -16,9 +16,8 @@ export function createQueryClient(): QueryClient {
         refetchOnWindowFocus: false,
         retry(failureCount, error) {
           // Don't hammer endpoints that failed for a known, non-transient reason.
-          if (ServiceError.is(error) && ['unauthorized', 'not_found', 'device_offline', 'validation'].includes(error.code)) {
-            return false
-          }
+          const permanent = ['unauthorized', 'forbidden', 'not_found', 'validation', 'limit_exceeded', 'subscription_expired']
+          if (ServiceError.is(error) && permanent.includes(error.code)) return false
           return failureCount < 2
         },
       },

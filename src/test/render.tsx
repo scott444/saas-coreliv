@@ -3,13 +3,11 @@ import { render, type RenderOptions } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { Services } from '@/services'
-import { createServices } from '@/services'
 import { ServicesProvider } from '@/app/ServicesProvider'
+import { AuthProvider } from '@/app/AuthProvider'
+import { createFakeServices } from './fakeServices'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { ToastProvider } from '@/components/ui/toast'
-
-/** Node's fetch needs absolute URLs; MSW handlers match any origin. */
-export const TEST_API_BASE = 'http://localhost/api'
 
 export function createTestQueryClient(): QueryClient {
   return new QueryClient({
@@ -20,9 +18,16 @@ export function createTestQueryClient(): QueryClient {
   })
 }
 
-/** Default services for tests: the mock implementations talking to the MSW node server. */
+/**
+ * Default services for tests: the hand-written in-memory fake.
+ *
+ * Component tests assert on what the UI does with data, not on how it is
+ * fetched, so they go through the interfaces rather than a stubbed network.
+ * The one test that does care about the wire - `apiClient.test.ts` - drives
+ * ApiClient directly against a stubbed `fetch`.
+ */
 export function createTestServices(): Services {
-  return createServices({ mode: 'mock', baseUrl: TEST_API_BASE })
+  return createFakeServices()
 }
 
 interface Options extends Omit<RenderOptions, 'wrapper'> {
@@ -41,7 +46,11 @@ export function renderWithProviders(ui: ReactElement, { services, queryClient, r
         <ServicesProvider services={svc}>
           <TooltipProvider>
             <ToastProvider>
-              <MemoryRouter initialEntries={[route]}>{children}</MemoryRouter>
+              {/* Pages greet the signed-in user, so the auth context has to be
+                  present even in tests that are not about authentication. */}
+              <AuthProvider>
+                <MemoryRouter initialEntries={[route]}>{children}</MemoryRouter>
+              </AuthProvider>
             </ToastProvider>
           </TooltipProvider>
         </ServicesProvider>

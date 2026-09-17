@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { AlertTriangle, Inbox, RefreshCw, WifiOff } from 'lucide-react'
+import { AlertTriangle, Inbox, Lock, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
@@ -64,9 +64,12 @@ interface ErrorStateProps {
 }
 
 export function ErrorState({ error, title, onRetry, className, compact = false }: ErrorStateProps) {
-  const isOffline = ServiceError.is(error) && error.code === 'device_offline'
-  const Icon = isOffline ? WifiOff : AlertTriangle
-  const heading = title ?? (isOffline ? 'Device offline' : 'Something went wrong')
+  // A plan limit is not a fault, so it gets its own icon and heading rather
+  // than the red triangle that means something broke.
+  const isLimit =
+    ServiceError.is(error) && (error.code === 'limit_exceeded' || error.code === 'subscription_expired')
+  const Icon = isLimit ? Lock : AlertTriangle
+  const heading = title ?? (isLimit ? 'Your plan does not cover that' : 'Something went wrong')
   return (
     <div
       role="alert"
@@ -76,7 +79,13 @@ export function ErrorState({ error, title, onRetry, className, compact = false }
         className,
       )}
     >
-      <div className={cn('flex items-center justify-center rounded-full bg-destructive/10 text-destructive', compact ? 'size-8' : 'size-12')}>
+      <div
+        className={cn(
+          'flex items-center justify-center rounded-full',
+          isLimit ? 'bg-amber-500/10 text-amber-600' : 'bg-destructive/10 text-destructive',
+          compact ? 'size-8' : 'size-12',
+        )}
+      >
         <Icon className={compact ? 'size-4' : 'size-6'} />
       </div>
       <div className="space-y-1">

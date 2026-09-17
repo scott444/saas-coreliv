@@ -1,0 +1,324 @@
+-- Home Asset Tracking Schema (PostgreSQL 14+)
+-- Design goals:
+--   * One generic `assets` table for anything with a make/model/serial (HVAC, appliances,
+--     irrigation controller, water heater, roof, etc.)
+--   * Category-specific specs stored as JSONB rather than dozens of nullable columns
+--   * Separate tables for the things that recur or accumulate: warranties, consumables,
+--     scheduled maintenance, service history, documents
+--   * Subtype tables only where the data is truly relational (irrigation zones)
+--   * Everything hangs off a property so the schema supports multiple homes
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid()
+
+-- ---------------------------------------------------------------------------
+-- Enums
+-- ---------------------------------------------------------------------------
+CREATE TYPE asset_status AS ENUM ('active', 'needs_repair', 'retired', 'replaced');
+CREATE TYPE warranty_kind AS ENUM ('manufacturer_parts', 'manufacturer_labor', 'installer_labor', 'extended', 'home_warranty');
+CREATE TYPE service_kind AS ENUM ('install', 'maintenance', 'repair', 'inspection', 'replacement', 'recall', 'other');
+CREATE TYPE document_kind AS ENUM ('receipt', 'manual', 'data_plate_photo', 'photo', 'warranty', 'permit', 'invoice', 'inspection_report', 'other');
+CREATE TYPE vendor_role AS ENUM ('retailer', 'installer', 'service', 'manufacturer', 'inspector');
+CREATE TYPE recurrence_unit AS ENUM ('day', 'week', 'month', 'year');
+
+-- ---------------------------------------------------------------------------
+-- Core reference tables
+-- ---------------------------------------------------------------------------
+CREATE TABLE properties (
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name          text NOT NULL,                 -- "Primary residence"
+    address       text,
+    year_built    smallint,
+    purchase_date date,
+    notes         text,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+-- Rooms / areas: "Kitchen", "Basement mechanical room", "Front yard"
+CREATE TABLE locations (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    property_id uuid NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+    name        text NOT NULL,
+    floor       text,                             -- "1", "basement", "exterior"
+    UNIQUE (property_id, name)
+);
+
+-- Hierarchical categories: Appliances > Kitchen > Refrigerator
+CREATE TABLE categories (
+    id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    parent_id uuid REFERENCES categories(id) ON DELETE SET NULL,
+    name      text NOT NULL,
+    -- Optional JSON Schema describing expected keys in assets.specs for this category
+    -- e.g. {"seer2": "number", "tons": "number", "refrigerant": "string"}
+    spec_schema jsonb,
+    UNIQUE (parent_id, name)
+);
+
+CREATE TABLE vendors (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name       text NOT NULL,
+    roles      vendor_role[] NOT NULL DEFAULT '{}',
+    phone      text,
+    email      text,
+    website    text,
+    account_number text,                         -- your customer/account # with them
+    notes      text,
+    UNIQUE (name)
+);
+
+-- ---------------------------------------------------------------------------
+-- Assets: the central table
+-- ---------------------------------------------------------------------------
+CREATE TABLE assets (
+    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    property_id     uuid NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+    category_id     uuid REFERENCES categories(id) ON DELETE SET NULL,
+    location_id     uuid REFERENCES locations(id) ON DELETE SET NULL,
+    parent_asset_id uuid REFERENCES assets(id) ON DELETE SET NULL,  -- AC condenser -> HVAC system
+
+    name            text NOT NULL,               -- "Upstairs furnace"
+    brand           text,
+    model_number    text,
+    serial_number   text,
+    description     text,
+
+    purchase_date   date,
+    install_date    date,
+    manufacture_date date,                       -- often decoded from serial
+    purchase_cost   numeric(12,2),
+    install_cost    numeric(12,2),
+    retailer_id     uuid REFERENCES vendors(id) ON DELETE SET NULL,
+    installer_id    uuid REFERENCES vendors(id) ON DELETE SET NULL,
+
+    expected_lifespan_years smallint,
+    status          asset_status NOT NULL DEFAULT 'active',
+    replaced_by_id  uuid REFERENCES assets(id) ON DELETE SET NULL,
+    retired_at      date,
+
+    -- Category-specific attributes:
+    --   HVAC: {"fuel":"natural_gas","tons":3,"seer2":16,"afue":96,"refrigerant":"R-454B"}
+    --   Water heater: {"type":"tank","capacity_gal":50,"fuel":"gas"}
+    --   Paint: {"color":"SW 7015 Repose Gray","finish":"eggshell","rooms":["living"]}
+    specs           jsonb NOT NULL DEFAULT '{}',
+
+    notes           text,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+
+    CHECK (install_date IS NULL OR purchase_date IS NULL OR install_date >= purchase_date)
+);
+
+CREATE INDEX assets_property_idx  ON assets(property_id);
+CREATE INDEX assets_category_idx  ON assets(category_id);
+CREATE INDEX assets_serial_idx    ON assets(serial_number);
+CREATE INDEX assets_specs_gin_idx ON assets USING gin (specs);
+
+-- Free-form tags: "smart", "gas", "needs_permit", "sale_disclosure"
+CREATE TABLE asset_tags (
+    asset_id uuid NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    tag      text NOT NULL,
+    PRIMARY KEY (asset_id, tag)
+);
+
+-- ---------------------------------------------------------------------------
+-- Warranties (an asset can have several: parts, labor, extended, home warranty)
+-- ---------------------------------------------------------------------------
+CREATE TABLE warranties (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    asset_id         uuid NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    kind             warranty_kind NOT NULL,
+    provider_id      uuid REFERENCES vendors(id) ON DELETE SET NULL,
+    start_date       date NOT NULL,
+    end_date         date,                       -- NULL = lifetime
+    registered       boolean NOT NULL DEFAULT false,
+    registration_ref text,                       -- confirmation #
+    transferable     boolean,
+    coverage_notes   text,                       -- "compressor 10yr, other parts 5yr"
+    claim_phone      text,
+    CHECK (end_date IS NULL OR end_date >= start_date)
+);
+
+CREATE INDEX warranties_asset_idx ON warranties(asset_id);
+
+-- ---------------------------------------------------------------------------
+-- Consumables: filters, bulbs, batteries, salt, anode rods
+-- ---------------------------------------------------------------------------
+CREATE TABLE consumables (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    asset_id         uuid NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    name             text NOT NULL,              -- "Air filter"
+    part_number      text,
+    size_or_spec     text,                       -- "20x25x4 MERV 11"
+    interval_value   smallint,                   -- 3
+    interval_unit    recurrence_unit,            -- month
+    last_replaced_on date,
+    quantity_on_hand smallint DEFAULT 0,
+    reorder_url      text,
+    unit_cost        numeric(10,2),
+    notes            text
+);
+
+CREATE INDEX consumables_asset_idx ON consumables(asset_id);
+
+-- ---------------------------------------------------------------------------
+-- Recurring maintenance tasks (things you do or hire out on a schedule)
+-- ---------------------------------------------------------------------------
+CREATE TABLE maintenance_tasks (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    asset_id         uuid REFERENCES assets(id) ON DELETE CASCADE,
+    property_id      uuid NOT NULL REFERENCES properties(id) ON DELETE CASCADE, -- allows property-level tasks (gutters)
+    name             text NOT NULL,              -- "Irrigation blowout", "Flush water heater"
+    interval_value   smallint NOT NULL,
+    interval_unit    recurrence_unit NOT NULL,
+    season_month     smallint CHECK (season_month BETWEEN 1 AND 12), -- pin to a month, e.g. 10 for blowout
+    diy              boolean NOT NULL DEFAULT true,
+    preferred_vendor_id uuid REFERENCES vendors(id) ON DELETE SET NULL,
+    last_done_on     date,
+    instructions     text,
+    active           boolean NOT NULL DEFAULT true
+);
+
+CREATE INDEX maintenance_tasks_property_idx ON maintenance_tasks(property_id);
+
+-- ---------------------------------------------------------------------------
+-- Service history: append-only log of everything that happened to an asset
+-- ---------------------------------------------------------------------------
+CREATE TABLE service_events (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    asset_id     uuid NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    task_id      uuid REFERENCES maintenance_tasks(id) ON DELETE SET NULL, -- if it satisfied a scheduled task
+    consumable_id uuid REFERENCES consumables(id) ON DELETE SET NULL,      -- if it was a consumable swap
+    kind         service_kind NOT NULL,
+    occurred_on  date NOT NULL,
+    vendor_id    uuid REFERENCES vendors(id) ON DELETE SET NULL,
+    technician   text,
+    cost         numeric(12,2),
+    covered_by_warranty_id uuid REFERENCES warranties(id) ON DELETE SET NULL,
+    summary      text NOT NULL,
+    parts_replaced text[],                       -- ['capacitor', 'contactor']
+    readings     jsonb,                          -- {"static_pressure": 0.6, "refrigerant_added_oz": 8}
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX service_events_asset_date_idx ON service_events(asset_id, occurred_on DESC);
+
+-- ---------------------------------------------------------------------------
+-- Documents: polymorphic attachment (receipts, manuals, photos, permits)
+-- ---------------------------------------------------------------------------
+CREATE TABLE documents (
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    property_id   uuid NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+    asset_id      uuid REFERENCES assets(id) ON DELETE CASCADE,
+    warranty_id   uuid REFERENCES warranties(id) ON DELETE CASCADE,
+    service_event_id uuid REFERENCES service_events(id) ON DELETE CASCADE,
+    kind          document_kind NOT NULL,
+    title         text NOT NULL,
+    storage_url   text NOT NULL,                 -- S3/Drive/local path
+    mime_type     text,
+    captured_on   date,
+    notes         text,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX documents_asset_idx ON documents(asset_id);
+
+-- ---------------------------------------------------------------------------
+-- Access points: shutoffs, valves, breakers, cleanouts
+-- ---------------------------------------------------------------------------
+CREATE TABLE access_points (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    property_id uuid NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+    asset_id    uuid REFERENCES assets(id) ON DELETE SET NULL,   -- what it controls
+    location_id uuid REFERENCES locations(id) ON DELETE SET NULL,
+    kind        text NOT NULL,                   -- 'water_main', 'gas_valve', 'breaker', 'irrigation_drain', 'cleanout'
+    label       text NOT NULL,                   -- "Breaker 14 – AC condenser"
+    description text,                            -- "Behind the furnace, red handle, turn clockwise"
+    photo_document_id uuid REFERENCES documents(id) ON DELETE SET NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- Irrigation subtype: zones belong to a controller asset
+-- ---------------------------------------------------------------------------
+CREATE TABLE irrigation_zones (
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    controller_asset_id uuid NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    zone_number   smallint NOT NULL,
+    name          text NOT NULL,                 -- "Front lawn"
+    head_type     text,                          -- 'spray', 'rotor', 'drip', 'bubbler'
+    head_count    smallint,
+    valve_location text,
+    run_minutes   smallint,
+    schedule      jsonb,                         -- {"days":["mon","thu"],"start":"05:00"}
+    notes         text,
+    UNIQUE (controller_asset_id, zone_number)
+);
+
+-- ---------------------------------------------------------------------------
+-- Recall checks
+-- ---------------------------------------------------------------------------
+CREATE TABLE recall_checks (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    asset_id   uuid NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    checked_on date NOT NULL DEFAULT current_date,
+    source     text NOT NULL DEFAULT 'cpsc.gov',
+    affected   boolean NOT NULL DEFAULT false,
+    reference  text,
+    notes      text
+);
+
+-- ---------------------------------------------------------------------------
+-- Housekeeping trigger
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION touch_updated_at() RETURNS trigger AS $$
+BEGIN NEW.updated_at = now(); RETURN NEW; END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER assets_touch BEFORE UPDATE ON assets
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- Helper views
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION add_interval(d date, v smallint, u recurrence_unit) RETURNS date AS $$
+    SELECT CASE u
+        WHEN 'day'   THEN d + (v || ' days')::interval
+        WHEN 'week'  THEN d + (v || ' weeks')::interval
+        WHEN 'month' THEN d + (v || ' months')::interval
+        WHEN 'year'  THEN d + (v || ' years')::interval
+    END::date;
+$$ LANGUAGE sql IMMUTABLE;
+
+-- Everything that is due: consumables + maintenance tasks, unioned
+CREATE OR REPLACE VIEW v_upcoming_due AS
+SELECT 'consumable' AS item_type, c.id, a.property_id, a.id AS asset_id, a.name AS asset_name,
+       c.name AS item_name,
+       add_interval(c.last_replaced_on, c.interval_value, c.interval_unit) AS due_on
+FROM consumables c JOIN assets a ON a.id = c.asset_id
+WHERE c.last_replaced_on IS NOT NULL AND c.interval_value IS NOT NULL AND a.status = 'active'
+UNION ALL
+SELECT 'task', t.id, t.property_id, t.asset_id, a.name,
+       t.name,
+       add_interval(t.last_done_on, t.interval_value, t.interval_unit)
+FROM maintenance_tasks t LEFT JOIN assets a ON a.id = t.asset_id
+WHERE t.active AND t.last_done_on IS NOT NULL
+ORDER BY due_on;
+
+-- Warranty status per asset
+CREATE OR REPLACE VIEW v_warranty_status AS
+SELECT a.id AS asset_id, a.name, w.kind, w.end_date,
+       CASE WHEN w.end_date IS NULL THEN 'lifetime'
+            WHEN w.end_date < current_date THEN 'expired'
+            WHEN w.end_date < current_date + 90 THEN 'expiring_soon'
+            ELSE 'active' END AS status
+FROM assets a JOIN warranties w ON w.asset_id = a.id;
+
+-- Replacement planning: age vs expected lifespan, plus lifetime spend
+CREATE OR REPLACE VIEW v_replacement_planning AS
+SELECT a.id, a.property_id, a.name, a.brand, a.model_number,
+       COALESCE(a.install_date, a.purchase_date, a.manufacture_date) AS in_service_date,
+       extract(year FROM age(COALESCE(a.install_date, a.purchase_date, a.manufacture_date)))::int AS age_years,
+       a.expected_lifespan_years,
+       COALESCE(a.install_date, a.purchase_date) + (a.expected_lifespan_years || ' years')::interval AS projected_replacement,
+       COALESCE(a.purchase_cost,0) + COALESCE(a.install_cost,0) AS acquisition_cost,
+       COALESCE((SELECT sum(cost) FROM service_events s WHERE s.asset_id = a.id), 0) AS lifetime_service_cost
+FROM assets a
+WHERE a.status IN ('active','needs_repair');

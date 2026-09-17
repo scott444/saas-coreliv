@@ -27,7 +27,7 @@ export function OrganizationPage() {
   const [removing, setRemoving] = useState<Member | null>(null)
 
   if (!currentOrg || !user) return null
-  const canManage = user.role === 'Owner' || user.role === 'Admin'
+  const canManage = currentOrg.role === 'Owner' || currentOrg.role === 'Admin'
 
   return (
     <div className="space-y-6">
@@ -68,6 +68,7 @@ export function OrganizationPage() {
             <MembersTable
               members={members.data}
               currentUser={user}
+            currentRole={currentOrg.role}
               busyUserId={changeRole.isPending ? changeRole.variables?.userId : removeMember.isPending ? removeMember.variables : null}
               onChangeRole={(userId, role) =>
                 changeRole.mutate(

@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  readonly VITE_DATA_MODE?: 'mock' | 'http'
+  /** Same-origin in every environment; the dev server and nginx both proxy it. */
   readonly VITE_API_BASE_URL?: string
 }
 

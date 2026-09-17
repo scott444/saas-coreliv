@@ -10,13 +10,15 @@ import { formatDate, initials } from '@/lib/format'
 interface MembersTableProps {
   members: Member[]
   currentUser: User
+  /** The signed-in user's role in this organization. */
+  currentRole: Role
   onChangeRole(userId: string, role: Role): void
   onRemove(member: Member): void
   busyUserId?: string | null
 }
 
-export function MembersTable({ members, currentUser, onChangeRole, onRemove, busyUserId }: MembersTableProps) {
-  const canManage = currentUser.role === 'Owner' || currentUser.role === 'Admin'
+export function MembersTable({ members, currentUser, currentRole, onChangeRole, onRemove, busyUserId }: MembersTableProps) {
+  const canManage = currentRole === 'Owner' || currentRole === 'Admin'
 
   return (
     <Table>
