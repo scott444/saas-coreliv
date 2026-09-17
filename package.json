@@ -15,6 +15,7 @@
     "typecheck": "tsc -b && npm run typecheck --workspace server",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:ci": "vitest run --reporter=default --reporter=junit --outputFile=reports/junit.xml",
     "db:migrate": "npm run migrate --workspace server",
     "db:seed": "npm run seed --workspace server",
     "db:reset": "npm run reset --workspace server"
@@ -53,5 +54,8 @@
     "typescript": "~5.9.2",
     "vite": "^7.3.6",
     "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

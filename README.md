@@ -292,6 +292,41 @@ re-seeding one database concurrently fails on a duplicate key that looks nothing
 `server/tsconfig.json` excludes `*.test.ts` so test code never reaches the built image;
 `server/tsconfig.test.json` typechecks it. `npm run typecheck` runs both.
 
+## CI
+
+`Jenkinsfile` is a declarative pipeline that runs entirely in containers, so the agent needs Docker
+and nothing else — no Node, no Postgres. It needs the Docker Pipeline, JUnit and Timestamper plugins.
+
+| Stage | What it proves |
+| ----- | -------------- |
+| Verify | `npm ci` matches the lockfile, both typechecks pass, and all 111 tests pass |
+| Build | The production bundle and the compiled API still build |
+| Images | Both Dockerfile targets build, tagged into the agent's local daemon |
+| Smoke | The images actually serve: Postgres, the API against it, nginx in front |
+
+The **Verify** stage starts a `postgres:17-alpine` sidecar on a per-build network, because the API
+tests skip themselves when no database is reachable. That is right for a developer and wrong for CI —
+a green pipeline that quietly ran half the suite is worse than no pipeline — so the stage asserts the
+sidecar is reachable before running anything, and fails if it is not.
+
+The **Smoke** stage runs the built images as a real chain rather than just checking they exist. The API
+starts against an *empty* database, so the migrations have to apply from nothing; nginx joins the
+network and the checks go through it, which is what catches a proxy or SPA-fallback regression. The
+API container takes the `api` network alias because that is the host `docker/nginx.conf` proxies to.
+
+Images are tagged `coreliv-api:<build>` / `coreliv:<build>` and moved to `:latest`, and stay in the
+agent's local daemon — the same tags `docker-compose.yml` uses, so a `docker compose up` on that
+machine picks up what CI just built. Nothing is pushed to a registry.
+
+Two details that are load-bearing rather than decorative:
+
+- `HOME` and `npm_config_cache` are pointed at the workspace. `docker.image(...).inside()` runs as the
+  Jenkins uid, which has no home inside the container, and npm fails with `EACCES` long before any
+  test runs without them.
+- `pg_isready` is called with `-d`. Without it the check passes against the `postgres` database, which
+  is ready before `POSTGRES_DB` has been created, and the next step connects to a database that does
+  not exist yet.
+
 ## Docker
 
 | Stage | Base | What it is |
