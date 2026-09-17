@@ -43,7 +43,7 @@ npm run dev                      # http://localhost:5173
 | ------- | ------------ |
 | `npm run dev` | Vite dev server, `/api` proxied to the API |
 | `npm run dev:api` | Fastify with watch, via `tsx` |
-| `npm test` / `npm run test:watch` | Vitest |
+| `npm test` / `npm run test:watch` | Vitest: the SPA, plus the API when Postgres is up |
 | `npm run typecheck` | `tsc -b` for the SPA, then the API |
 | `npm run build` / `npm run build:api` | Production bundle / compiled API |
 | `npm run db:migrate` · `db:seed` · `db:reset` | Migrations, demo data, both from scratch |
@@ -234,18 +234,63 @@ filter control — a tile reading zero because it was already applied would be a
 
 ## Tests
 
+`npm test` runs two Vitest projects.
+
+**`web`** — jsdom, against the service interfaces:
+
 ```
-src/domain/dates.test.ts                    interval arithmetic, month clamping, due status
-src/domain/warranty.test.ts                 warranty windows, best-cover selection, DST boundary
+src/domain/dates.test.ts                     interval arithmetic, month clamping, due status
+src/domain/warranty.test.ts                  warranty windows, best-cover selection, DST boundary
 src/components/assets/registerFilter.test.ts filtering, search, tiles and ordering (pure)
-src/services/apiClient.test.ts              the wire: error-body mapping, 204, non-JSON responses
-src/pages/assets/AssetsPage.test.tsx        the register, driven through the tiles and search
-src/test/serviceBoundary.test.tsx           whole pages against swapped services, fetch disabled
+src/services/apiClient.test.ts               the wire: error-body mapping, 204, non-JSON responses
+src/pages/assets/AssetsPage.test.tsx         the register, driven through the tiles and search
+src/test/serviceBoundary.test.tsx            whole pages against swapped services, fetch disabled
 ```
 
 Component tests go through the service interfaces rather than a stubbed network, so they assert what
 the UI does with data, not how it was fetched. `apiClient.test.ts` is the one place that cares about
 the wire.
+
+**`api`** — node, against a real Postgres, driving the whole Fastify stack through `app.inject()`:
+
+```
+server/src/routes/responseShapes.test.ts  what the driver actually returns, across every read endpoint
+server/src/routes/auth.test.ts            sessions, revocation, rotation, claiming an invite
+server/src/routes/tenancy.test.ts         cross-organization isolation, roles, plan limits
+server/src/routes/assets.test.ts          derived warranty state, filters, validation, upserts
+server/src/routes/maintenance.test.ts     due semantics and the completion transaction
+```
+
+These exist because of a bug the `web` project could not have caught. `vendors.roles` is
+`vendor_role[]` — an array of a *user-defined* enum. node-postgres ships array parsers keyed by
+built-in type OIDs, so it returned the raw literal `'{installer,service}'` and the vendors page threw
+on `.map`. The fake services returned a real array, so the fake was more correct than the server —
+exactly the blind spot a hand-written fake creates.
+
+`responseShapes.test.ts` therefore walks whatever each endpoint actually returned, rather than
+asserting field by field: per-field checks only ever cover the fields someone remembered. Removing the
+`::text[]` cast fails four of its tests.
+
+### Running the API tests
+
+They need Postgres. When it is not reachable the whole project **skips** rather than fails, so
+`npm test` still works for someone checking a component:
+
+```bash
+docker compose up -d db
+npm test                         # both projects
+npx vitest run --project api     # just the API
+npx vitest run --project web     # just the SPA
+```
+
+They use their own database — `DATABASE_URL` with `_test` appended, created on first run — so they
+never touch development data. Override with `TEST_DATABASE_URL`. Each file truncates `users` and
+`organizations`, which cascades to everything, then re-seeds the demo household; the category taxonomy
+and plans belong to the migrations and survive. The project runs single-forked, because two files
+re-seeding one database concurrently fails on a duplicate key that looks nothing like the real cause.
+
+`server/tsconfig.json` excludes `*.test.ts` so test code never reaches the built image;
+`server/tsconfig.test.json` typechecks it. `npm run typecheck` runs both.
 
 ## Docker
 

@@ -44,7 +44,7 @@ async function categoryId(client: PoolClient, slug: string): Promise<string> {
   return row.id
 }
 
-export async function seed(): Promise<void> {
+export async function seed({ quiet = false }: { quiet?: boolean } = {}): Promise<void> {
   const passwordHash = await hashPassword(DEMO_PASSWORD)
 
   await transaction(async (client) => {
@@ -54,7 +54,7 @@ export async function seed(): Promise<void> {
       client,
     )
     if (existing) {
-      console.log('Demo data already present; nothing to do.')
+      if (!quiet) console.log('Demo data already present; nothing to do.')
       return
     }
 
@@ -780,6 +780,7 @@ export async function seed(): Promise<void> {
       [assets.furnace, months(-2), assets.dryer],
     )
 
+    if (quiet) return
     console.log('Seeded:')
     console.log('  organization  The Reyes household')
     console.log(`  properties    2, assets ${assetSeeds.length}`)

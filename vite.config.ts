@@ -38,10 +38,44 @@ export default defineConfig(({ mode }) => {
           : undefined,
     },
     test: {
-      environment: 'jsdom',
-      globals: true,
-      setupFiles: ['./src/test/setup.ts'],
-      css: false,
+      // Two projects, because they need different worlds: the SPA runs in
+      // jsdom against fake services, the API runs in node against a real
+      // Postgres. `npm test` runs both; the API project skips itself when
+      // no database is reachable.
+      projects: [
+        {
+          extends: true,
+          test: {
+            name: 'web',
+            environment: 'jsdom',
+            globals: true,
+            setupFiles: ['./src/test/setup.ts'],
+            include: ['src/**/*.test.{ts,tsx}'],
+            css: false,
+          },
+        },
+        {
+          test: {
+            name: 'api',
+            environment: 'node',
+            globals: true,
+            include: ['server/src/**/*.test.ts'],
+            setupFiles: ['./server/src/test/setup.ts'],
+            globalSetup: ['./server/src/test/globalSetup.ts'],
+            // One database, shared, so the files must not run concurrently -
+            // two of them truncating and re-seeding at once fails on a
+            // duplicate key that looks nothing like the real cause.
+            //
+            // singleFork rather than `fileParallelism: false`: that option is
+            // only honoured at the root of the config, so inside a project it
+            // is silently ignored.
+            pool: 'forks',
+            poolOptions: { forks: { singleFork: true } },
+            hookTimeout: 60_000,
+            testTimeout: 30_000,
+          },
+        },
+      ],
     },
   }
 })

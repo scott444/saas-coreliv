@@ -36,7 +36,6 @@ export async function buildApp(): Promise<FastifyInstance> {
     logger: { level: env.logLevel },
     // Behind nginx, so trust the forwarded headers for request logging.
     trustProxy: true,
-    disableRequestLogging: false,
   })
 
   if (env.corsOrigins.length > 0) {
