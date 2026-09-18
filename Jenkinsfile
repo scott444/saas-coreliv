@@ -128,22 +128,26 @@ Most likely fixes:
           env.CTR = pick
           echo "Container runtime: ${env.CTR}"
 
-          // Who the workspace-writing container runs as. Rootless podman maps
-          // container root onto the agent's own user, so files land correctly
-          // and forcing a uid would fight the mapping. Anything rootful writes
-          // as real root and would leave a workspace Jenkins cannot clean up,
-          // so there the uid has to be pinned. Real Docker has no such field,
-          // and the fallback puts it in the safe branch.
-          def rootless = sh(
-            returnStdout: true,
-            script: "${pick} info --format '{{.Host.Security.Rootless}}' 2>/dev/null || echo false",
-          ).trim()
-
-          env.CTR_USER = (rootless == 'true')
-            ? ''
-            : sh(returnStdout: true, script: 'echo "-u $(id -u):$(id -g)"').trim()
-
-          echo "Rootless: ${rootless} -> user args: '${env.CTR_USER}'"
+          // Build 5 got as far as starting the Postgres sidecar and then died
+          // on `statfs <workspace>: no such file or directory` for the bind
+          // mount. The engine resolving a bind mount is not always in the
+          // same filesystem namespace as the agent - a socket mounted into a
+          // containerised agent is the usual reason - and when it is not, the
+          // path the client can read is a path the engine has never heard of.
+          //
+          // This records which situation we are in. The pipeline copies the
+          // workspace in either way (see below), so this is evidence rather
+          // than a decision.
+          sh """
+            set +e
+            echo "agent user:   \$(id -un) (\$(id -u):\$(id -g)), HOME=\$HOME"
+            echo "workspace:    ${env.WORKSPACE}"
+            ls -ld "${env.WORKSPACE}" 2>&1 | sed 's/^/  /'
+            echo "engine rootless:  \$(${pick} info --format '{{.Host.Security.Rootless}}' 2>/dev/null || echo unknown)"
+            echo "engine remote:    \$(${pick} info --format '{{.Host.ServiceIsRemote}}' 2>/dev/null || echo unknown)"
+            echo "engine graphroot: \$(${pick} info --format '{{.Store.GraphRoot}}' 2>/dev/null || echo unknown)"
+            exit 0
+          """
         }
       }
     }
@@ -155,6 +159,7 @@ Most likely fixes:
           // builds on one agent can never reach each other's database.
           def network = "coreliv-ci-${env.BUILD_NUMBER}"
           def dbHost = "coreliv-db-${env.BUILD_NUMBER}"
+          def jobHost = "coreliv-job-${env.BUILD_NUMBER}"
 
           try {
             sh """
@@ -184,15 +189,25 @@ Most likely fixes:
               done
             """
 
-            // HOME and the npm cache point at the workspace because the
-            // container's user has no home of its own; without them npm fails
-            // with EACCES long before any test runs.
+            // The workspace is copied in rather than bind mounted. `cp`
+            // streams from the client, so it works whether or not the engine
+            // shares a filesystem with the agent - which a bind mount does
+            // not, and which is what killed build 5.
+            //
+            // The npm cache lives in a named volume for the same reason: it
+            // is engine-side, so it survives between builds without either
+            // end needing to see the other's disk.
+            //
+            // HOME points at /app because the container's user has no home of
+            // its own, and npm fails with EACCES long before any test runs
+            // without it.
             sh """
               set -e
-              ${env.CTR} run --rm --network ${network} ${env.CTR_USER} \\
-                -v "${env.WORKSPACE}":/app -w /app \\
+              ${env.CTR} rm -f ${jobHost} >/dev/null 2>&1 || true
+              ${env.CTR} create --name ${jobHost} --network ${network} -w /app \\
                 -e HOME=/app \\
-                -e npm_config_cache=/app/.npm-cache \\
+                -e npm_config_cache=/npm-cache \\
+                -v coreliv-npm-cache:/npm-cache \\
                 -e DATABASE_URL=postgres://${env.PG_USER}:${env.PG_PASS}@${dbHost}:5432/${env.PG_DB} \\
                 ${env.NODE_IMAGE} sh -c '
                   set -e
@@ -215,9 +230,22 @@ Most likely fixes:
 
                   npm run test:ci
                 '
+
+              # The "/." suffix copies the directory's *contents*. Without
+              # it, and because -w already created /app, cp nests the
+              # workspace at /app/<name> and npm ci then reports a missing
+              # lockfile rather than a missing copy.
+              ${env.CTR} cp "${env.WORKSPACE}/." ${jobHost}:/app
+              ${env.CTR} start --attach ${jobHost}
             """
           } finally {
+            // The report has to come back even when the tests failed - that
+            // is precisely when it is worth reading - so this runs before the
+            // container is removed and never fails the stage itself.
             sh """
+              rm -rf "${env.WORKSPACE}/reports"
+              ${env.CTR} cp ${jobHost}:/app/reports "${env.WORKSPACE}/reports" >/dev/null 2>&1 || true
+              ${env.CTR} rm -f ${jobHost} >/dev/null 2>&1 || true
               ${env.CTR} rm -f ${dbHost} >/dev/null 2>&1 || true
               ${env.CTR} network rm ${network} >/dev/null 2>&1 || true
             """
@@ -238,13 +266,32 @@ Most likely fixes:
 
     stage('Build') {
       steps {
-        sh """
-          set -e
-          ${env.CTR} run --rm ${env.CTR_USER} \\
-            -v "${env.WORKSPACE}":/app -w /app \\
-            -e HOME=/app -e npm_config_cache=/app/.npm-cache \\
-            ${env.NODE_IMAGE} sh -c 'npm run build && npm run build:api'
-        """
+        script {
+          // Same copy-in / copy-out shape as Verify, and a second `npm ci`
+          // because that container is gone. With the cache volume warm it is
+          // seconds, and it buys stages that fail independently instead of
+          // one container threaded through the whole pipeline.
+          def buildHost = "coreliv-build-${env.BUILD_NUMBER}"
+          try {
+            sh """
+              set -e
+              ${env.CTR} rm -f ${buildHost} >/dev/null 2>&1 || true
+              ${env.CTR} create --name ${buildHost} -w /app \\
+                -e HOME=/app \\
+                -e npm_config_cache=/npm-cache \\
+                -v coreliv-npm-cache:/npm-cache \\
+                ${env.NODE_IMAGE} sh -c 'set -e; npm ci; npm run build; npm run build:api'
+
+              ${env.CTR} cp "${env.WORKSPACE}/." ${buildHost}:/app
+              ${env.CTR} start --attach ${buildHost}
+
+              rm -rf "${env.WORKSPACE}/dist"
+              ${env.CTR} cp ${buildHost}:/app/dist "${env.WORKSPACE}/dist"
+            """
+          } finally {
+            sh "${env.CTR} rm -f ${buildHost} >/dev/null 2>&1 || true"
+          }
+        }
       }
       post {
         success {

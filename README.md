@@ -309,6 +309,13 @@ tests skip themselves when no database is reachable. That is right for a develop
 a green pipeline that quietly ran half the suite is worse than no pipeline — so the stage asserts the
 sidecar is reachable before running anything, and fails if it is not.
 
+The workspace is **copied** into each container rather than bind mounted. `cp` streams from the
+client, so it works whether or not the engine shares a filesystem with the agent — and on a
+containerised agent talking to a socket, it does not: the path the client can read is one the engine
+has never heard of, and a bind mount fails with `statfs ...: no such file or directory`. The npm cache
+lives in a named volume for the same reason. Note the `/.` suffix on the copy source; without it the
+workspace nests one level down and `npm ci` reports a missing lockfile.
+
 The **Smoke** stage runs the built images as a real chain rather than just checking they exist. The API
 starts against an *empty* database, so the migrations have to apply from nothing; nginx joins the
 network and the checks go through it, which is what catches a proxy or SPA-fallback regression. The
