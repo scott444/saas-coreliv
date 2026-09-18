@@ -62,6 +62,51 @@ pipeline {
       }
     }
 
+    stage('Preflight') {
+      steps {
+        script {
+          // Build 1 died on `docker: not found` five lines into the Verify
+          // stage. This reports what the agent actually has before anything
+          // depends on it, so a missing tool reads as a missing tool rather
+          // than as exit code 127 from a shell three containers deep.
+          def report = sh(returnStdout: true, script: '''
+            set +e
+            echo "host:        $(uname -srm 2>/dev/null || echo unknown)"
+            for tool in git node npm docker podman nerdctl; do
+              found=$(command -v $tool 2>/dev/null)
+              if [ -n "$found" ]; then
+                echo "$tool: $found  $($tool --version 2>/dev/null | head -1)"
+              else
+                echo "$tool: not found"
+              fi
+            done
+            for sock in /var/run/docker.sock /run/docker.sock /run/podman/podman.sock; do
+              [ -S "$sock" ] && echo "socket:      $sock present"
+            done
+            echo "DOCKER_HOST: ${DOCKER_HOST:-unset}"
+            exit 0
+          ''').trim()
+
+          echo "Agent ${env.NODE_NAME} capabilities:"
+          echo report
+
+          def hasDocker = sh(returnStatus: true, script: 'command -v docker >/dev/null 2>&1') == 0
+          if (!hasDocker) {
+            // Triple-quoted so the message can span lines without escapes.
+            error """No docker CLI on agent '${env.NODE_NAME}'.
+
+Every stage of this pipeline runs in a container, so it needs one. Either:
+  a) give the agent a docker CLI and a reachable daemon socket, or
+  b) switch to the NodeJS tool plugin and drop the Images and Smoke stages -
+     the API integration tests then need a reachable Postgres, or they skip
+     themselves and the pipeline goes green having run half the suite.
+
+The capability report above says what this agent does have."""
+          }
+        }
+      }
+    }
+
     stage('Verify') {
       steps {
         script {
@@ -135,7 +180,12 @@ pipeline {
       }
       post {
         always {
-          junit testResults: 'reports/junit.xml', allowEmptyResults: false
+          // allowEmptyResults, despite wanting to know about a run that
+          // tested nothing: when the stage fails before the tests run there
+          // is no report, and a strict junit step then throws a second,
+          // louder error that buries the first. Vitest already exits
+          // non-zero if it matches no test files, so nothing is lost.
+          junit testResults: 'reports/junit.xml', allowEmptyResults: true
         }
       }
     }
@@ -186,10 +236,12 @@ pipeline {
           def apiHost = "coreliv-smoke-api-${env.BUILD_NUMBER}"
           def webHost = "coreliv-smoke-web-${env.BUILD_NUMBER}"
 
-          // Waits for an HTTP endpoint from a throwaway container on the same
-          // network, so nothing has to be published to the agent's ports.
-          def waitFor = { String url, String container ->
-            sh """
+          // Builds the wait script rather than running it: calling a step
+          // like sh() from inside a closure is a CPS pitfall in Jenkins
+          // pipeline, so the closure stays a pure string function and sh is
+          // called at the top level.
+          def waitScript = { String url, String container ->
+            """
               for attempt in \$(seq 1 40); do
                 if docker run --rm --network ${network} ${env.NODE_IMAGE} wget -qO- ${url} >/dev/null 2>&1; then
                   echo "${url} answered after \${attempt} attempt(s)"
@@ -230,12 +282,12 @@ pipeline {
               ) {
                 // Against an empty database, so this also proves the
                 // migrations still apply from nothing.
-                waitFor("http://api:3000/healthz", apiHost)
+                sh waitScript("http://api:3000/healthz", apiHost)
 
                 docker.image("${env.IMAGE_WEB}:${env.BUILD_NUMBER}").withRun(
                   "--name ${webHost} --network ${network}"
                 ) {
-                  waitFor("http://${webHost}:8080/healthz", webHost)
+                  sh waitScript("http://${webHost}:8080/healthz", webHost)
 
                   sh """
                     set -e
