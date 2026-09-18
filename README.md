@@ -297,9 +297,12 @@ re-seeding one database concurrently fails on a duplicate key that looks nothing
 `Jenkinsfile` is a declarative pipeline that runs entirely in containers, so the agent needs a
 container runtime and nothing else — no Node, no Postgres. Any of docker, podman or podman-docker
 will do: the **Preflight** stage tries each by actually starting a container and takes the first that
-works, because a binary on `PATH` proves nothing. It needs the JUnit and Timestamper plugins —
-deliberately *not* Docker Pipeline, whose `docker.image().inside()` runs a container and then
-`docker exec`s every step into it, which is the part that behaves differently under podman.
+works, because a binary on `PATH` proves nothing. The native `podman` client is tried before the
+`docker` shim and aimed at the same socket, so it reaches the same engine and the same storage while
+matching the service's version — see the note on push below for why that matters. It needs the JUnit
+and Timestamper plugins — deliberately *not* Docker Pipeline, whose `docker.image().inside()` runs a
+container and then `docker exec`s every step into it, which is the part that behaves differently
+under podman.
 
 | Stage | What it proves |
 | ----- | -------------- |
@@ -352,9 +355,18 @@ HTTP, podman needs `REGISTRY_INSECURE = 'true'` in the pipeline (or an entry in
 `/etc/containers/registries.conf`), while docker needs it in `insecure-registries` in
 `/etc/docker/daemon.json` — which of those applies is decided by the *engine*, not by the name of
 the binary: `/usr/bin/docker` on the `ds-core-ops` agent is the podman-docker shim, and
-`docker --version` there answers `podman version 4.3.1`. Preflight resolves that and logs it as
-`engine: podman`, and the Push stage keys off it. The stage's failure message maps each error string
-— `no such host`, HTTP-to-HTTPS, unknown CA, `unauthorized` — onto the fix for the detected engine.
+`docker --version` there answers `podman version 4.3.1` while `/usr/local/bin/podman` is 4.9.3.
+Preflight resolves that, logs `engine: podman` with the client and server versions side by side, and
+warns when they differ.
+
+That warning exists because push is the one operation the skew breaks. Podman made the push progress
+reply a JSON event stream in 4.4, and a 4.3 client reading a 4.9 service's reply fails with
+`failed to parse push results stream` — *after* every blob and the manifest have been written. Build
+10 failed exactly that way with the image sitting in the registry. Build, run and `cp` are all
+indifferent to the gap, which is why nine builds were green before anything noticed. The stage's
+failure message maps each error string — `no such host`, HTTP-to-HTTPS, unknown CA, `unauthorized`,
+and this parse error — onto its fix, and for the parse error tells you to check the registry rather
+than push again.
 
 Two details that are load-bearing rather than decorative:
 

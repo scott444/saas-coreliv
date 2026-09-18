@@ -115,10 +115,19 @@ pipeline {
           // on PATH proves nothing: a podman-docker shim over a podman that
           // cannot itself start containers would pass a `command -v` check
           // and then fail halfway through the test stage.
+          //
+          // The native podman client is tried before the docker shim, and
+          // aimed at the same socket so it reaches the same engine and the
+          // same storage. Build 10 is why: /usr/bin/docker on this agent is
+          // podman 4.3.1 while /usr/local/bin/podman is 4.9.3, and a 4.3.x
+          // client cannot read the JSON progress stream that a 4.4+ service
+          // sends back from a push. Everything else - build, run, cp - is
+          // indifferent to the mismatch, so the pipeline ran green for nine
+          // builds and then failed only once it had something to publish.
           def detected = sh(returnStdout: true, script: """
             set +e
             PICK=""
-            for candidate in "docker" "podman" "podman --remote --url unix:///run/docker.sock"; do
+            for candidate in "podman --remote --url unix:///run/docker.sock" "docker" "podman"; do
               binary=\$(echo "\$candidate" | awk '{print \$1}')
               command -v "\$binary" >/dev/null 2>&1 || { echo "try: \$candidate -> no binary"; continue; }
               if \$candidate run --rm ${env.NODE_IMAGE} true >/dev/null 2>&1; then
@@ -160,7 +169,25 @@ Most likely fixes:
           // podman but /etc/docker/daemon.json for docker.
           def version = sh(returnStdout: true, script: "${pick} --version 2>/dev/null || true").trim()
           env.ENGINE = version.toLowerCase().contains('podman') ? 'podman' : 'docker'
-          echo "Container runtime: ${env.CTR}  (engine: ${env.ENGINE} - ${version})"
+
+          // Client and server separately, because the interesting number is
+          // the gap between them. Build 10 pushed every blob and the manifest
+          // and then died parsing the reply, purely because the two ends were
+          // three minor versions apart; that is a deduction from a stack of
+          // log lines unless it is simply printed here.
+          def clientVer = sh(returnStdout: true, script: "${pick} version --format '{{.Client.Version}}' 2>/dev/null || echo unknown").trim()
+          def serverVer = sh(returnStdout: true, script: "${pick} version --format '{{.Server.Version}}' 2>/dev/null || echo unknown").trim()
+          echo "Container runtime: ${env.CTR}  (engine: ${env.ENGINE}, client ${clientVer}, server ${serverVer})"
+
+          if (clientVer != serverVer && clientVer != 'unknown' && serverVer != 'unknown') {
+            echo """Warning: ${env.ENGINE} client ${clientVer} is driving server ${serverVer}.
+
+Most operations tolerate that. Push does not: podman changed the push
+progress reply to a JSON event stream in 4.4, and an older client answers
+with 'failed to parse push results stream'. If Push fails that way, the
+upload itself has already succeeded - check the registry before assuming
+otherwise."""
+          }
 
           // Build 5 got as far as starting the Postgres sidecar and then died
           // on `statfs <workspace>: no such file or directory` for the bind
@@ -552,7 +579,14 @@ Match the error text against these, in order:
       /etc/containers/certs.d/${env.REGISTRY}/ca.crt   (podman)
       /etc/docker/certs.d/${env.REGISTRY}/ca.crt       (docker)
   - 'unauthorized' or 'authentication required' - anonymous push is no longer
-    allowed; see the withCredentials sketch in the stage above."""
+    allowed; see the withCredentials sketch in the stage above.
+  - 'failed to parse push results stream' - the blobs and the manifest went
+    up and only the reply could not be read, because the client and server
+    versions printed by Preflight differ. The registry already has the image;
+    confirm with
+      curl -s http://${env.REGISTRY}/v2/${env.IMAGE_API}/tags/list
+    and fix by pointing the runtime at a client matching the service rather
+    than by pushing again."""
         }
       }
     }
