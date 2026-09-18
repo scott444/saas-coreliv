@@ -314,6 +314,10 @@ starts against an *empty* database, so the migrations have to apply from nothing
 network and the checks go through it, which is what catches a proxy or SPA-fallback regression. The
 API container takes the `api` network alias because that is the host `docker/nginx.conf` proxies to.
 
+Concurrent builds are allowed. Every network and container name carries the build number, Jenkins
+gives each concurrent run its own workspace, and both images are tagged with the build number before
+anything moves — so the only shared thing is the floating `:latest` tag, which is last-finisher-wins.
+
 Images are tagged `coreliv-api:<build>` / `coreliv:<build>` and moved to `:latest`, and stay in the
 agent's local daemon — the same tags `docker-compose.yml` uses, so a `docker compose up` on that
 machine picks up what CI just built. Nothing is pushed to a registry.

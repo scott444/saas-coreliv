@@ -21,9 +21,16 @@ pipeline {
     // not an estimate.
     timeout(time: 30, unit: 'MINUTES')
     buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '5'))
-    // Each build makes its own network and container names, so builds do not
-    // collide; this is only here because they share the local image tags.
-    disableConcurrentBuilds()
+    // Concurrent builds are allowed. What makes that safe: every network and
+    // container name carries BUILD_NUMBER, Jenkins gives each concurrent run
+    // its own workspace (so HOME and the npm cache below are per-build), and
+    // both image builds are tagged with BUILD_NUMBER before anything moves.
+    //
+    // The one shared thing left is the floating :latest tag, which is
+    // last-finisher-wins - the usual semantics for a floating tag, but worth
+    // knowing if two builds land together and you then `docker compose up`.
+    // Add the Lockable Resources plugin and wrap the retag in `lock('coreliv-latest')`
+    // if that ordering ever matters.
   }
 
   environment {
