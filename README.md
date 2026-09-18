@@ -294,8 +294,12 @@ re-seeding one database concurrently fails on a duplicate key that looks nothing
 
 ## CI
 
-`Jenkinsfile` is a declarative pipeline that runs entirely in containers, so the agent needs Docker
-and nothing else — no Node, no Postgres. It needs the Docker Pipeline, JUnit and Timestamper plugins.
+`Jenkinsfile` is a declarative pipeline that runs entirely in containers, so the agent needs a
+container runtime and nothing else — no Node, no Postgres. Any of docker, podman or podman-docker
+will do: the **Preflight** stage tries each by actually starting a container and takes the first that
+works, because a binary on `PATH` proves nothing. It needs the JUnit and Timestamper plugins —
+deliberately *not* Docker Pipeline, whose `docker.image().inside()` runs a container and then
+`docker exec`s every step into it, which is the part that behaves differently under podman.
 
 | Stage | What it proves |
 | ----- | -------------- |
@@ -303,6 +307,7 @@ and nothing else — no Node, no Postgres. It needs the Docker Pipeline, JUnit a
 | Build | The production bundle and the compiled API still build |
 | Images | Both Dockerfile targets build, tagged into the agent's local daemon |
 | Smoke | The images actually serve: Postgres, the API against it, nginx in front |
+| Push | The smoke-tested images reach `registry.ds-core-ops.lan:5000` — `main` only |
 
 The **Verify** stage starts a `postgres:17-alpine` sidecar on a per-build network, because the API
 tests skip themselves when no database is reachable. That is right for a developer and wrong for CI —
@@ -325,15 +330,33 @@ Concurrent builds are allowed. Every network and container name carries the buil
 gives each concurrent run its own workspace, and both images are tagged with the build number before
 anything moves — so the only shared thing is the floating `:latest` tag, which is last-finisher-wins.
 
-Images are tagged `coreliv-api:<build>` / `coreliv:<build>` and moved to `:latest`, and stay in the
-agent's local daemon — the same tags `docker-compose.yml` uses, so a `docker compose up` on that
-machine picks up what CI just built. Nothing is pushed to a registry.
+Images are tagged `coreliv-api:<build>` / `coreliv:<build>` and moved to `:latest` in the agent's
+local daemon — the same tags `docker-compose.yml` uses, so a `docker compose up` on that machine
+picks up what CI just built.
+
+The **Push** stage then publishes them to `registry.ds-core-ops.lan:5000`, but only on `main`:
+feature branches build and smoke-test their images and then leave them on the agent. It runs after
+Smoke rather than after Images so only a tag that passed the smoke checks can reach the registry,
+and it retags rather than rebuilds — what lands there is byte-for-byte what Smoke exercised. The
+build-number tags are pushed before `:latest`, so a push that dies partway leaves a complete
+immutable tag with `:latest` still on the previous build.
+
+Note that `https://registry-ui.ds-core-ops.lan/` is the *browser UI* onto that registry, not a push
+target — `docker push` speaks the registry v2 API and takes a `host[:port]` with no scheme and no
+path. The endpoint actually pushed to is the `REGISTRY` variable in the `Jenkinsfile` environment
+block; correcting it is a one-line change.
+
+Pushes are anonymous. If the registry starts requiring credentials, the Push stage carries a
+commented `withCredentials` block showing the `--password-stdin` form to use. If it serves plain
+HTTP, the agent's docker daemon needs it listed in `insecure-registries`, or podman needs
+`REGISTRY_INSECURE = 'true'` in the pipeline — the stage's failure message spells out both.
 
 Two details that are load-bearing rather than decorative:
 
-- `HOME` and `npm_config_cache` are pointed at the workspace. `docker.image(...).inside()` runs as the
-  Jenkins uid, which has no home inside the container, and npm fails with `EACCES` long before any
-  test runs without them.
+- `HOME` and `npm_config_cache` are set explicitly on every container. The image's user has no home of
+  its own, and npm fails with `EACCES` long before any test runs without `HOME`; the cache points at a
+  named volume rather than the workspace, so it is engine-side and survives between builds without
+  either end needing to see the other's disk.
 - `pg_isready` is called with `-d`. Without it the check passes against the `postgres` database, which
   is ready before `POSTGRES_DB` has been created, and the next step connects to a database that does
   not exist yet.

@@ -46,6 +46,17 @@ pipeline {
 
     IMAGE_API = 'coreliv-api'
     IMAGE_WEB = 'coreliv'
+
+    // Where images are published. `docker push` speaks the registry v2 API
+    // and takes a host[:port] with no scheme and no path, so this is not the
+    // UI URL: https://registry-ui.ds-core-ops.lan/ is a browser front end
+    // onto this registry, not an endpoint a client can push to.
+    REGISTRY = 'registry.ds-core-ops.lan:5000'
+
+    // Set to 'true' when the registry is plain HTTP and the agent runs
+    // podman. docker needs a daemon setting instead - the Push stage's
+    // failure message spells out both.
+    REGISTRY_INSECURE = 'false'
   }
 
   stages {
@@ -55,6 +66,16 @@ pipeline {
         script {
           env.GIT_SHA = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
           currentBuild.displayName = "#${env.BUILD_NUMBER} ${env.GIT_SHA}"
+
+          // Which branch this is, for the Push stage's gate. Three sources
+          // because three job types answer differently: BRANCH_NAME exists
+          // only in a multibranch job, the git plugin sets GIT_BRANCH to
+          // something like 'origin/main' in a plain pipeline job, and a
+          // checkout that left HEAD detached has neither - so git is asked
+          // last rather than first.
+          def rawBranch = env.BRANCH_NAME ?: env.GIT_BRANCH ?: sh(returnStdout: true, script: 'git rev-parse --abbrev-ref HEAD').trim()
+          env.BRANCH = rawBranch.replaceFirst(/^origin\//, '')
+          echo "Branch: ${env.BRANCH} (images are published only from main)"
         }
       }
     }
@@ -413,6 +434,99 @@ Most likely fixes:
               ${env.CTR} network rm ${network} >/dev/null 2>&1 || true
             """
           }
+        }
+      }
+    }
+
+    stage('Push') {
+      // After Smoke rather than after Images, so only a tag that passed the
+      // smoke checks can reach the registry. Nothing is rebuilt here - the
+      // images already exist locally under their BUILD_NUMBER tags and this
+      // only retags and pushes them, so what lands in the registry is
+      // byte-for-byte what Smoke just exercised.
+      when {
+        // Deliberately not `branch 'main'`. That matcher reads BRANCH_NAME,
+        // which only exists in a multibranch job; in a plain pipeline job it
+        // is null and the stage would quietly skip itself on every build.
+        // env.BRANCH is resolved in Checkout from whichever source the job
+        // type actually provides.
+        expression { env.BRANCH == 'main' }
+      }
+      steps {
+        script {
+          def remoteApi = "${env.REGISTRY}/${env.IMAGE_API}"
+          def remoteWeb = "${env.REGISTRY}/${env.IMAGE_WEB}"
+
+          // The registry accepts anonymous pushes, so there is no login step.
+          // If that changes, add a Jenkins username/password credential and
+          // wrap the sh block below in:
+          //
+          //   withCredentials([usernamePassword(credentialsId: 'coreliv-registry',
+          //       usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+          //     sh "echo \$REG_PASS | ${env.CTR} login ${env.REGISTRY} -u \$REG_USER --password-stdin"
+          //     ...
+          //   }
+          //
+          // --password-stdin rather than -p: the password then never reaches
+          // the process table or the build log.
+
+          // podman verifies TLS on push and takes a flag to skip it. docker
+          // has no such flag - it decides from /etc/docker/daemon.json before
+          // the CLI is involved at all. The failure message covers both.
+          def tlsOpt = (env.CTR.startsWith('podman') && env.REGISTRY_INSECURE == 'true') ? ' --tls-verify=false' : ''
+
+          sh """
+            set -e
+            ${env.CTR} tag ${env.IMAGE_API}:${env.BUILD_NUMBER} ${remoteApi}:${env.BUILD_NUMBER}
+            ${env.CTR} tag ${env.IMAGE_WEB}:${env.BUILD_NUMBER} ${remoteWeb}:${env.BUILD_NUMBER}
+            ${env.CTR} tag ${env.IMAGE_API}:${env.BUILD_NUMBER} ${remoteApi}:latest
+            ${env.CTR} tag ${env.IMAGE_WEB}:${env.BUILD_NUMBER} ${remoteWeb}:latest
+
+            # The immutable tags go first. If the run dies partway through,
+            # the registry is left holding a complete build-number tag with
+            # :latest still on the previous build - the recoverable order to
+            # fail in, and the reason :latest is pushed rather than built.
+            ${env.CTR} push${tlsOpt} ${remoteApi}:${env.BUILD_NUMBER}
+            ${env.CTR} push${tlsOpt} ${remoteWeb}:${env.BUILD_NUMBER}
+            ${env.CTR} push${tlsOpt} ${remoteApi}:latest
+            ${env.CTR} push${tlsOpt} ${remoteWeb}:latest
+          """
+
+          // RepoDigests is only populated once an image has actually been
+          // pushed, so this reports the digest and confirms the push landed.
+          // Never fails the stage - the pushes above are the authority.
+          sh """
+            set +e
+            echo '--- published to ${env.REGISTRY} ---'
+            ${env.CTR} image inspect ${remoteApi}:${env.BUILD_NUMBER} --format 'api  {{index .RepoDigests 0}}' 2>/dev/null
+            ${env.CTR} image inspect ${remoteWeb}:${env.BUILD_NUMBER} --format 'web  {{index .RepoDigests 0}}' 2>/dev/null
+            exit 0
+          """
+
+          echo 'Browse: https://registry-ui.ds-core-ops.lan/'
+        }
+      }
+      post {
+        failure {
+          echo """Push to ${env.REGISTRY} failed.
+
+The build itself is sound - everything through Smoke passed, and both images
+are still on agent '${env.NODE_NAME}' under their local tags. Only publishing
+failed, so this is a registry or agent-trust problem, not a code problem.
+
+Worth checking, in order:
+  - The registry is plain HTTP and the runtime refuses it. For docker, add it
+    to /etc/docker/daemon.json on the agent:
+      { "insecure-registries": ["${env.REGISTRY}"] }
+    and restart the daemon. For podman, set REGISTRY_INSECURE = 'true' in the
+    environment block, which adds --tls-verify=false to the push.
+  - The registry is HTTPS behind a private CA the agent does not trust: drop
+    the CA cert at /etc/docker/certs.d/${env.REGISTRY}/ca.crt for docker, or
+    /etc/containers/certs.d/${env.REGISTRY}/ca.crt for podman.
+  - Anonymous push is no longer allowed - see the withCredentials sketch in
+    the stage above.
+  - REGISTRY names the wrong endpoint. https://registry-ui.ds-core-ops.lan/
+    is the web UI; the v2 API pushed to here is a separate host:port."""
         }
       }
     }
