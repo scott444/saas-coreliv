@@ -1,13 +1,18 @@
 // Coreliv CI
 //
 // Requires:
-//   - a Docker daemon the Jenkins user can talk to
-//   - the Docker Pipeline plugin      (docker.image / docker.build)
-//   - the JUnit plugin                (test reporting)
-//   - the Timestamper plugin          (the timestamps() option)
+//   - a container runtime on the agent: docker, podman, or podman-docker
+//   - the JUnit plugin       (test reporting)
+//   - the Timestamper plugin (the timestamps() option)
 //
-// The whole build runs in containers, so the agent needs no Node, no npm and
-// no Postgres of its own. The API integration tests get a real Postgres as a
+// Deliberately NOT the Docker Pipeline plugin. `docker.image().inside()` runs
+// a container, then `docker exec`s every step into it, and that is the part
+// that behaves differently under podman. Driving the runtime through plain
+// `sh` costs some verbosity and buys the pipeline the freedom to run on
+// whichever of the three the agent happens to have.
+//
+// The whole build runs in containers, so the agent needs no Node and no
+// Postgres of its own. The API integration tests get a real Postgres as a
 // sidecar on a per-build network - without one they would silently skip, and
 // a green pipeline that ran half the suite is worse than no pipeline.
 
@@ -16,21 +21,19 @@ pipeline {
 
   options {
     timestamps()
-    // A cold run - pulling both images, npm ci, 111 tests, two image
-    // builds and the smoke check - lands around 6 minutes; this is headroom,
-    // not an estimate.
+    // A cold run - pulling images, npm ci, 111 tests, two image builds and
+    // the smoke check - lands around 6 minutes; this is headroom.
     timeout(time: 30, unit: 'MINUTES')
     buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '5'))
     // Concurrent builds are allowed. What makes that safe: every network and
     // container name carries BUILD_NUMBER, Jenkins gives each concurrent run
-    // its own workspace (so HOME and the npm cache below are per-build), and
-    // both image builds are tagged with BUILD_NUMBER before anything moves.
+    // its own workspace (so HOME and the npm cache are per-build), and both
+    // images are tagged with BUILD_NUMBER before anything moves.
     //
     // The one shared thing left is the floating :latest tag, which is
     // last-finisher-wins - the usual semantics for a floating tag, but worth
-    // knowing if two builds land together and you then `docker compose up`.
-    // Add the Lockable Resources plugin and wrap the retag in `lock('coreliv-latest')`
-    // if that ordering ever matters.
+    // knowing if two builds land together. Add the Lockable Resources plugin
+    // and wrap the retag in `lock('coreliv-latest')` if that ever matters.
   }
 
   environment {
@@ -40,12 +43,6 @@ pipeline {
     PG_USER = 'coreliv'
     PG_PASS = 'coreliv'
     PG_DB   = 'coreliv'
-
-    // `docker.image(...).inside()` runs as the Jenkins uid, which has no home
-    // inside the container. Without these, npm tries to write to / and fails
-    // with EACCES long before any test runs.
-    HOME             = "${env.WORKSPACE}"
-    npm_config_cache = "${env.WORKSPACE}/.npm-cache"
 
     IMAGE_API = 'coreliv-api'
     IMAGE_WEB = 'coreliv'
@@ -65,10 +62,10 @@ pipeline {
     stage('Preflight') {
       steps {
         script {
-          // Build 1 died on `docker: not found` five lines into the Verify
-          // stage. This reports what the agent actually has before anything
-          // depends on it, so a missing tool reads as a missing tool rather
-          // than as exit code 127 from a shell three containers deep.
+          // Reports what the agent has, then picks a runtime that can
+          // actually start a container - not merely one whose binary exists.
+          // Build 1 died on `docker: not found` five lines into Verify; this
+          // is where that question gets answered instead.
           def report = sh(returnStdout: true, script: '''
             set +e
             echo "host:        $(uname -srm 2>/dev/null || echo unknown)"
@@ -90,19 +87,63 @@ pipeline {
           echo "Agent ${env.NODE_NAME} capabilities:"
           echo report
 
-          def hasDocker = sh(returnStatus: true, script: 'command -v docker >/dev/null 2>&1') == 0
-          if (!hasDocker) {
-            // Triple-quoted so the message can span lines without escapes.
-            error """No docker CLI on agent '${env.NODE_NAME}'.
+          // Each candidate is tried by running a container, because a binary
+          // on PATH proves nothing: a podman-docker shim over a podman that
+          // cannot itself start containers would pass a `command -v` check
+          // and then fail halfway through the test stage.
+          def detected = sh(returnStdout: true, script: """
+            set +e
+            PICK=""
+            for candidate in "docker" "podman" "podman --remote --url unix:///run/docker.sock"; do
+              binary=\$(echo "\$candidate" | awk '{print \$1}')
+              command -v "\$binary" >/dev/null 2>&1 || { echo "try: \$candidate -> no binary"; continue; }
+              if \$candidate run --rm ${env.NODE_IMAGE} true >/dev/null 2>&1; then
+                echo "try: \$candidate -> ok"
+                PICK="\$candidate"
+                break
+              fi
+              echo "try: \$candidate -> cannot run a container"
+            done
+            echo "PICK=\$PICK"
+            exit 0
+          """).trim()
 
-Every stage of this pipeline runs in a container, so it needs one. Either:
-  a) give the agent a docker CLI and a reachable daemon socket, or
-  b) switch to the NodeJS tool plugin and drop the Images and Smoke stages -
-     the API integration tests then need a reachable Postgres, or they skip
-     themselves and the pipeline goes green having run half the suite.
+          echo detected
+          def pick = (detected =~ /PICK=(.*)/)[0][1].trim()
 
-The capability report above says what this agent does have."""
+          if (!pick) {
+            error """No usable container runtime on agent '${env.NODE_NAME}'.
+
+Every stage of this pipeline runs in a container. The candidates tried and why
+each failed are listed above, and the capability report says what the agent has.
+
+Most likely fixes:
+  - rootless podman in an unprivileged agent needs /dev/fuse and subuid/subgid
+    mappings, or
+  - point podman at the daemon socket the agent already has, via DOCKER_HOST, or
+  - install node and npm on the agent and drop the container stages - but the
+    API tests would then skip themselves without a reachable Postgres."""
           }
+
+          env.CTR = pick
+          echo "Container runtime: ${env.CTR}"
+
+          // Who the workspace-writing container runs as. Rootless podman maps
+          // container root onto the agent's own user, so files land correctly
+          // and forcing a uid would fight the mapping. Anything rootful writes
+          // as real root and would leave a workspace Jenkins cannot clean up,
+          // so there the uid has to be pinned. Real Docker has no such field,
+          // and the fallback puts it in the safe branch.
+          def rootless = sh(
+            returnStdout: true,
+            script: "${pick} info --format '{{.Host.Security.Rootless}}' 2>/dev/null || echo false",
+          ).trim()
+
+          env.CTR_USER = (rootless == 'true')
+            ? ''
+            : sh(returnStdout: true, script: 'echo "-u $(id -u):$(id -g)"').trim()
+
+          echo "Rootless: ${rootless} -> user args: '${env.CTR_USER}'"
         }
       }
     }
@@ -115,76 +156,81 @@ The capability report above says what this agent does have."""
           def network = "coreliv-ci-${env.BUILD_NUMBER}"
           def dbHost = "coreliv-db-${env.BUILD_NUMBER}"
 
-          sh "docker network create ${network}"
           try {
-            docker.image(env.POSTGRES_IMAGE).withRun(
-              "--name ${dbHost} --network ${network}" +
-              " -e POSTGRES_USER=${env.PG_USER}" +
-              " -e POSTGRES_PASSWORD=${env.PG_PASS}" +
-              " -e POSTGRES_DB=${env.PG_DB}"
-            ) {
-              // `docker run` returns as soon as the process starts, which is
-              // well before Postgres accepts connections. -d matters: without
-              // it pg_isready checks the `postgres` database, which is ready
-              // before POSTGRES_DB has been created.
-              sh """
-                for attempt in \$(seq 1 40); do
-                  if docker exec ${dbHost} pg_isready -U ${env.PG_USER} -d ${env.PG_DB} >/dev/null 2>&1; then
-                    echo "Postgres ready after \${attempt} attempt(s)"
-                    exit 0
-                  fi
-                  sleep 2
-                done
-                echo 'Postgres never became ready'
-                docker logs ${dbHost} || true
-                exit 1
-              """
+            sh """
+              set -e
+              ${env.CTR} network create ${network}
+              ${env.CTR} run -d --name ${dbHost} --network ${network} \\
+                -e POSTGRES_USER=${env.PG_USER} \\
+                -e POSTGRES_PASSWORD=${env.PG_PASS} \\
+                -e POSTGRES_DB=${env.PG_DB} \\
+                ${env.POSTGRES_IMAGE}
 
-              docker.image(env.NODE_IMAGE).inside(
-                "--network ${network}" +
-                " -e DATABASE_URL=postgres://${env.PG_USER}:${env.PG_PASS}@${dbHost}:5432/${env.PG_DB}"
-              ) {
-                sh 'node --version && npm --version'
+              # The run returns as soon as the process starts, well before
+              # Postgres accepts connections. -d matters: without it pg_isready
+              # checks the 'postgres' database, which is ready before
+              # POSTGRES_DB has been created.
+              for attempt in \$(seq 1 40); do
+                if ${env.CTR} exec ${dbHost} pg_isready -U ${env.PG_USER} -d ${env.PG_DB} >/dev/null 2>&1; then
+                  echo "Postgres ready after \${attempt} attempt(s)"
+                  break
+                fi
+                if [ "\${attempt}" = "40" ]; then
+                  echo 'Postgres never became ready'
+                  ${env.CTR} logs ${dbHost} || true
+                  exit 1
+                fi
+                sleep 2
+              done
+            """
 
-                // `npm ci` rather than install: it fails loudly if the
-                // lockfile and package.json disagree, which is the whole
-                // point of running it in CI.
-                sh 'npm ci'
+            // HOME and the npm cache point at the workspace because the
+            // container's user has no home of its own; without them npm fails
+            // with EACCES long before any test runs.
+            sh """
+              set -e
+              ${env.CTR} run --rm --network ${network} ${env.CTR_USER} \\
+                -v "${env.WORKSPACE}":/app -w /app \\
+                -e HOME=/app \\
+                -e npm_config_cache=/app/.npm-cache \\
+                -e DATABASE_URL=postgres://${env.PG_USER}:${env.PG_PASS}@${dbHost}:5432/${env.PG_DB} \\
+                ${env.NODE_IMAGE} sh -c '
+                  set -e
+                  node --version && npm --version
 
-                // Typecheck before tests: a type error is faster to find here
-                // than in a failing assertion, and this covers the SPA, the
-                // API, and the API tests themselves.
-                sh 'npm run typecheck'
+                  # npm ci rather than install: it fails loudly when the
+                  # lockfile and package.json disagree, which is the point of
+                  # running it in CI.
+                  npm ci
 
-                // The suite skips its API half when Postgres is unreachable.
-                // That is right for a developer and wrong for CI, so prove
-                // the sidecar is actually being used before trusting a pass.
-                sh '''
-                  node -e "
-                    const { Client } = require('pg');
-                    new Client({ connectionString: process.env.DATABASE_URL })
-                      .connect()
-                      .then(() => { console.log('Sidecar reachable - API tests will run'); process.exit(0); })
-                      .catch((e) => { console.error('Sidecar unreachable:', e.message); process.exit(1); });
-                  "
-                '''
+                  # Typecheck first - a type error is faster to read here than
+                  # as a failing assertion. Covers the SPA, the API and the
+                  # API tests.
+                  npm run typecheck
 
-                sh 'npm run test:ci'
-              }
-            }
+                  # The suite skips its API half when Postgres is unreachable.
+                  # Right for a developer, wrong for CI, so prove the sidecar
+                  # is really being used before trusting a pass.
+                  node -e "require(\\"pg\\").Client.prototype.constructor && new (require(\\"pg\\").Client)({ connectionString: process.env.DATABASE_URL }).connect().then(function () { console.log(\\"Sidecar reachable - API tests will run\\"); process.exit(0); }).catch(function (e) { console.error(\\"Sidecar unreachable:\\", e.message); process.exit(1); })"
+
+                  npm run test:ci
+                '
+            """
           } finally {
-            // withRun stops the container; the network is ours to clean up.
-            sh "docker network rm ${network} || true"
+            sh """
+              ${env.CTR} rm -f ${dbHost} >/dev/null 2>&1 || true
+              ${env.CTR} network rm ${network} >/dev/null 2>&1 || true
+            """
           }
         }
       }
       post {
         always {
-          // allowEmptyResults, despite wanting to know about a run that
-          // tested nothing: when the stage fails before the tests run there
-          // is no report, and a strict junit step then throws a second,
-          // louder error that buries the first. Vitest already exits
-          // non-zero if it matches no test files, so nothing is lost.
+          // allowEmptyResults, despite wanting to know about a run that tested
+          // nothing: when the stage fails before the tests run there is no
+          // report, and a strict junit step then throws a second, louder error
+          // that buries the first. Vitest already exits non-zero if it matches
+          // no test files, so nothing is lost.
           junit testResults: 'reports/junit.xml', allowEmptyResults: true
         }
       }
@@ -192,13 +238,13 @@ The capability report above says what this agent does have."""
 
     stage('Build') {
       steps {
-        script {
-          docker.image(env.NODE_IMAGE).inside {
-            // Runs tsc -b again before vite build, exactly as the image does.
-            sh 'npm run build'
-            sh 'npm run build:api'
-          }
-        }
+        sh """
+          set -e
+          ${env.CTR} run --rm ${env.CTR_USER} \\
+            -v "${env.WORKSPACE}":/app -w /app \\
+            -e HOME=/app -e npm_config_cache=/app/.npm-cache \\
+            ${env.NODE_IMAGE} sh -c 'npm run build && npm run build:api'
+        """
       }
       post {
         success {
@@ -209,19 +255,17 @@ The capability report above says what this agent does have."""
 
     stage('Images') {
       steps {
-        script {
-          // Built from the same Dockerfile targets compose uses, and left in
-          // the agent's local daemon under the tags compose expects, so a
-          // `docker compose up` on this machine picks up what CI just built.
-          def api = docker.build("${env.IMAGE_API}:${env.BUILD_NUMBER}", '--target api .')
-          def web = docker.build("${env.IMAGE_WEB}:${env.BUILD_NUMBER}", '--target runtime .')
+        sh """
+          set -e
+          ${env.CTR} build --target api     -t ${env.IMAGE_API}:${env.BUILD_NUMBER} .
+          ${env.CTR} build --target runtime -t ${env.IMAGE_WEB}:${env.BUILD_NUMBER} .
 
-          api.tag('latest')
-          web.tag('latest')
+          ${env.CTR} tag ${env.IMAGE_API}:${env.BUILD_NUMBER} ${env.IMAGE_API}:latest
+          ${env.CTR} tag ${env.IMAGE_WEB}:${env.BUILD_NUMBER} ${env.IMAGE_WEB}:latest
 
-          sh "docker image inspect ${env.IMAGE_API}:${env.BUILD_NUMBER} --format 'api  {{.Id}} {{.Size}} bytes'"
-          sh "docker image inspect ${env.IMAGE_WEB}:${env.BUILD_NUMBER} --format 'web  {{.Id}} {{.Size}} bytes'"
-        }
+          ${env.CTR} image inspect ${env.IMAGE_API}:${env.BUILD_NUMBER} --format 'api  {{.Id}}'
+          ${env.CTR} image inspect ${env.IMAGE_WEB}:${env.BUILD_NUMBER} --format 'web  {{.Id}}'
+        """
       }
     }
 
@@ -236,78 +280,91 @@ The capability report above says what this agent does have."""
           def apiHost = "coreliv-smoke-api-${env.BUILD_NUMBER}"
           def webHost = "coreliv-smoke-web-${env.BUILD_NUMBER}"
 
-          // Builds the wait script rather than running it: calling a step
-          // like sh() from inside a closure is a CPS pitfall in Jenkins
-          // pipeline, so the closure stays a pure string function and sh is
-          // called at the top level.
-          def waitScript = { String url, String container ->
-            """
+          try {
+            sh """
+              set -e
+              ${env.CTR} network create ${network}
+
+              ${env.CTR} run -d --name ${dbHost} --network ${network} \\
+                -e POSTGRES_USER=${env.PG_USER} \\
+                -e POSTGRES_PASSWORD=${env.PG_PASS} \\
+                -e POSTGRES_DB=${env.PG_DB} \\
+                ${env.POSTGRES_IMAGE}
+
               for attempt in \$(seq 1 40); do
-                if docker run --rm --network ${network} ${env.NODE_IMAGE} wget -qO- ${url} >/dev/null 2>&1; then
-                  echo "${url} answered after \${attempt} attempt(s)"
-                  exit 0
+                ${env.CTR} exec ${dbHost} pg_isready -U ${env.PG_USER} -d ${env.PG_DB} >/dev/null 2>&1 && break
+                if [ "\${attempt}" = "40" ]; then
+                  echo 'Postgres never became ready'
+                  ${env.CTR} logs ${dbHost} || true
+                  exit 1
                 fi
                 sleep 2
               done
-              echo "${url} never answered"
-              docker logs ${container} || true
-              exit 1
-            """
-          }
 
-          sh "docker network create ${network}"
-          try {
-            docker.image(env.POSTGRES_IMAGE).withRun(
-              "--name ${dbHost} --network ${network}" +
-              " -e POSTGRES_USER=${env.PG_USER}" +
-              " -e POSTGRES_PASSWORD=${env.PG_PASS}" +
-              " -e POSTGRES_DB=${env.PG_DB}"
-            ) {
-              sh """
-                for attempt in \$(seq 1 40); do
-                  docker exec ${dbHost} pg_isready -U ${env.PG_USER} -d ${env.PG_DB} >/dev/null 2>&1 && exit 0
-                  sleep 2
-                done
-                echo 'Postgres never became ready'
-                docker logs ${dbHost} || true
+              # The network alias matters: docker/nginx.conf proxies to the
+              # host 'api', so the container has to answer to that name here
+              # the same way the compose service does.
+              #
+              # It starts against an empty database, so this also proves the
+              # migrations still apply from nothing.
+              ${env.CTR} run -d --name ${apiHost} --network ${network} --network-alias api \\
+                -e DATABASE_URL=postgres://${env.PG_USER}:${env.PG_PASS}@${dbHost}:5432/${env.PG_DB} \\
+                ${env.IMAGE_API}:${env.BUILD_NUMBER}
+
+              for attempt in \$(seq 1 40); do
+                ${env.CTR} run --rm --network ${network} ${env.NODE_IMAGE} \\
+                  wget -qO- http://api:3000/healthz >/dev/null 2>&1 && break
+                if [ "\${attempt}" = "40" ]; then
+                  echo 'API never became healthy'
+                  ${env.CTR} logs ${apiHost} || true
+                  exit 1
+                fi
+                sleep 2
+              done
+              echo 'API healthy'
+
+              ${env.CTR} run -d --name ${webHost} --network ${network} \\
+                ${env.IMAGE_WEB}:${env.BUILD_NUMBER}
+
+              for attempt in \$(seq 1 40); do
+                ${env.CTR} run --rm --network ${network} ${env.NODE_IMAGE} \\
+                  wget -qO- http://${webHost}:8080/healthz >/dev/null 2>&1 && break
+                if [ "\${attempt}" = "40" ]; then
+                  echo 'nginx never became healthy'
+                  ${env.CTR} logs ${webHost} || true
+                  exit 1
+                fi
+                sleep 2
+              done
+              echo 'nginx healthy'
+
+              echo '--- nginx serves the SPA shell ---'
+              ${env.CTR} run --rm --network ${network} ${env.NODE_IMAGE} \\
+                wget -qO- http://${webHost}:8080/ | grep -q 'id="root"'
+
+              echo '--- a client-side route falls back to the shell ---'
+              ${env.CTR} run --rm --network ${network} ${env.NODE_IMAGE} \\
+                wget -qO- http://${webHost}:8080/assets/9f4c1e22-0000-0000-0000-000000000000 \\
+                | grep -q 'id="root"'
+
+              echo '--- a missing build asset 404s instead of serving the shell ---'
+              if ${env.CTR} run --rm --network ${network} ${env.NODE_IMAGE} \\
+                   wget -qO- http://${webHost}:8080/static/does-not-exist.js >/dev/null 2>&1; then
+                echo 'a missing asset was served something - nginx is handing out the shell'
                 exit 1
-              """
+              fi
 
-              // The network alias matters: nginx.conf proxies to the host
-              // `api`, so the container has to answer to that name here the
-              // same way the compose service does.
-              docker.image("${env.IMAGE_API}:${env.BUILD_NUMBER}").withRun(
-                "--name ${apiHost} --network ${network} --network-alias api" +
-                " -e DATABASE_URL=postgres://${env.PG_USER}:${env.PG_PASS}@${dbHost}:5432/${env.PG_DB}"
-              ) {
-                // Against an empty database, so this also proves the
-                // migrations still apply from nothing.
-                sh waitScript("http://api:3000/healthz", apiHost)
+              echo '--- nginx proxies /api to the API, which answers from the database ---'
+              ${env.CTR} run --rm --network ${network} ${env.NODE_IMAGE} \\
+                wget -qO- http://${webHost}:8080/api/billing/plans | grep -q starter
 
-                docker.image("${env.IMAGE_WEB}:${env.BUILD_NUMBER}").withRun(
-                  "--name ${webHost} --network ${network}"
-                ) {
-                  sh waitScript("http://${webHost}:8080/healthz", webHost)
-
-                  sh """
-                    set -e
-                    echo '--- nginx serves the SPA shell ---'
-                    docker run --rm --network ${network} ${env.NODE_IMAGE}                       wget -qO- http://${webHost}:8080/ | grep -q '<div id="root">'
-
-                    echo '--- a client-side route falls back to the shell ---'
-                    docker run --rm --network ${network} ${env.NODE_IMAGE}                       wget -qO- http://${webHost}:8080/assets/9f4c1e22-0000-0000-0000-000000000000                       | grep -q '<div id="root">'
-
-                    echo '--- a missing build asset 404s instead of serving the shell ---'
-                    docker run --rm --network ${network} ${env.NODE_IMAGE}                       wget -qO- http://${webHost}:8080/static/does-not-exist.js && exit 1 || true
-
-                    echo '--- nginx proxies /api to the API, which answers from the database ---'
-                    docker run --rm --network ${network} ${env.NODE_IMAGE}                       wget -qO- http://${webHost}:8080/api/billing/plans | grep -q starter
-                  """
-                }
-              }
-            }
+              echo 'Smoke checks passed'
+            """
           } finally {
-            sh "docker network rm ${network} || true"
+            sh """
+              ${env.CTR} rm -f ${webHost} ${apiHost} ${dbHost} >/dev/null 2>&1 || true
+              ${env.CTR} network rm ${network} >/dev/null 2>&1 || true
+            """
           }
         }
       }
@@ -319,8 +376,7 @@ The capability report above says what this agent does have."""
       // Deliberately not cleanWs: the workspace is worth keeping between
       // builds for the npm cache, `npm ci` replaces node_modules itself, and
       // `dist` is overwritten - so nothing here grows without bound. Add the
-      // Workspace Cleanup plugin and call cleanWs() here if you would rather
-      // start every build from an empty directory.
+      // Workspace Cleanup plugin and call cleanWs() here to start clean.
       sh 'rm -rf reports || true'
     }
     failure {
