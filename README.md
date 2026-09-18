@@ -307,7 +307,7 @@ deliberately *not* Docker Pipeline, whose `docker.image().inside()` runs a conta
 | Build | The production bundle and the compiled API still build |
 | Images | Both Dockerfile targets build, tagged into the agent's local daemon |
 | Smoke | The images actually serve: Postgres, the API against it, nginx in front |
-| Push | The smoke-tested images reach `registry.ds-core-ops.lan:5000` — `main` only |
+| Push | The smoke-tested images reach `ds-core-ops.lan:5000` — `main` only |
 
 The **Verify** stage starts a `postgres:17-alpine` sidecar on a per-build network, because the API
 tests skip themselves when no database is reachable. That is right for a developer and wrong for CI —
@@ -334,7 +334,7 @@ Images are tagged `coreliv-api:<build>` / `coreliv:<build>` and moved to `:lates
 local daemon — the same tags `docker-compose.yml` uses, so a `docker compose up` on that machine
 picks up what CI just built.
 
-The **Push** stage then publishes them to `registry.ds-core-ops.lan:5000`, but only on `main`:
+The **Push** stage then publishes them to `ds-core-ops.lan:5000`, but only on `main`:
 feature branches build and smoke-test their images and then leave them on the agent. It runs after
 Smoke rather than after Images so only a tag that passed the smoke checks can reach the registry,
 and it retags rather than rebuilds — what lands there is byte-for-byte what Smoke exercised. The
@@ -348,8 +348,13 @@ block; correcting it is a one-line change.
 
 Pushes are anonymous. If the registry starts requiring credentials, the Push stage carries a
 commented `withCredentials` block showing the `--password-stdin` form to use. If it serves plain
-HTTP, the agent's docker daemon needs it listed in `insecure-registries`, or podman needs
-`REGISTRY_INSECURE = 'true'` in the pipeline — the stage's failure message spells out both.
+HTTP, podman needs `REGISTRY_INSECURE = 'true'` in the pipeline (or an entry in
+`/etc/containers/registries.conf`), while docker needs it in `insecure-registries` in
+`/etc/docker/daemon.json` — which of those applies is decided by the *engine*, not by the name of
+the binary: `/usr/bin/docker` on the `ds-core-ops` agent is the podman-docker shim, and
+`docker --version` there answers `podman version 4.3.1`. Preflight resolves that and logs it as
+`engine: podman`, and the Push stage keys off it. The stage's failure message maps each error string
+— `no such host`, HTTP-to-HTTPS, unknown CA, `unauthorized` — onto the fix for the detected engine.
 
 Two details that are load-bearing rather than decorative:
 

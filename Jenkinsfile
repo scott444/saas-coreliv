@@ -51,11 +51,14 @@ pipeline {
     // and takes a host[:port] with no scheme and no path, so this is not the
     // UI URL: https://registry-ui.ds-core-ops.lan/ is a browser front end
     // onto this registry, not an endpoint a client can push to.
-    REGISTRY = 'registry.ds-core-ops.lan:5000'
+    REGISTRY = 'ds-core-ops.lan:5000'
 
-    // Set to 'true' when the registry is plain HTTP and the agent runs
-    // podman. docker needs a daemon setting instead - the Push stage's
-    // failure message spells out both.
+    // Set to 'true' when the registry serves plain HTTP - the usual default
+    // for a registry on :5000 - and the engine is podman, which then gets
+    // --tls-verify=false on the push. docker takes no such flag and reads
+    // /etc/docker/daemon.json instead, and which of the two applies is the
+    // engine Preflight detected, not the name of the binary: /usr/bin/docker
+    // on this agent is the podman-docker shim.
     REGISTRY_INSECURE = 'false'
   }
 
@@ -147,7 +150,17 @@ Most likely fixes:
           }
 
           env.CTR = pick
-          echo "Container runtime: ${env.CTR}"
+
+          // Which engine is actually behind that command. On this agent
+          // /usr/bin/docker is the podman-docker shim and `docker --version`
+          // answers "podman version 4.3.1", so the name of the binary says
+          // nothing about whose config files and whose flags apply. Push
+          // needs to know: --tls-verify is podman-only, and an insecure
+          // registry is declared in /etc/containers/registries.conf for
+          // podman but /etc/docker/daemon.json for docker.
+          def version = sh(returnStdout: true, script: "${pick} --version 2>/dev/null || true").trim()
+          env.ENGINE = version.toLowerCase().contains('podman') ? 'podman' : 'docker'
+          echo "Container runtime: ${env.CTR}  (engine: ${env.ENGINE} - ${version})"
 
           // Build 5 got as far as starting the Postgres sidecar and then died
           // on `statfs <workspace>: no such file or directory` for the bind
@@ -472,8 +485,10 @@ Most likely fixes:
 
           // podman verifies TLS on push and takes a flag to skip it. docker
           // has no such flag - it decides from /etc/docker/daemon.json before
-          // the CLI is involved at all. The failure message covers both.
-          def tlsOpt = (env.CTR.startsWith('podman') && env.REGISTRY_INSECURE == 'true') ? ' --tls-verify=false' : ''
+          // the CLI is involved at all. Keyed off ENGINE rather than CTR
+          // because the command here is named `docker` while the engine
+          // behind it is podman, and only the engine's opinion counts.
+          def tlsOpt = (env.ENGINE == 'podman' && env.REGISTRY_INSECURE == 'true') ? ' --tls-verify=false' : ''
 
           sh """
             set -e
@@ -512,21 +527,32 @@ Most likely fixes:
 
 The build itself is sound - everything through Smoke passed, and both images
 are still on agent '${env.NODE_NAME}' under their local tags. Only publishing
-failed, so this is a registry or agent-trust problem, not a code problem.
+failed, so this is a name, trust or credentials problem, not a code problem.
 
-Worth checking, in order:
-  - The registry is plain HTTP and the runtime refuses it. For docker, add it
-    to /etc/docker/daemon.json on the agent:
+The engine here is ${env.ENGINE}, which is what decides where the fixes below
+go. Note that /usr/bin/docker can be the podman-docker shim, so the name of
+the binary is not the answer - the Preflight line above is.
+
+Match the error text against these, in order:
+  - 'no such host' - REGISTRY does not resolve, and no pipeline change fixes
+    that: either the name is wrong or the resolver does not know it. The push
+    is made by the engine, which when remote or rootless need not share a
+    resolver with the agent shell, so test where the engine actually runs:
+      ${env.CTR} run --rm ${env.NODE_IMAGE} getent hosts <host>
+    Remember that https://registry-ui.ds-core-ops.lan/ is the browser UI onto
+    the registry, not a push target: push speaks the registry v2 API and takes
+    a host[:port] with no scheme and no path.
+  - 'server gave HTTP response to HTTPS client' - the registry is plain HTTP.
+    For podman, set REGISTRY_INSECURE = 'true' in the environment block above,
+    or declare it in /etc/containers/registries.conf on the agent. For docker,
+    add it to /etc/docker/daemon.json and restart the daemon:
       { "insecure-registries": ["${env.REGISTRY}"] }
-    and restart the daemon. For podman, set REGISTRY_INSECURE = 'true' in the
-    environment block, which adds --tls-verify=false to the push.
-  - The registry is HTTPS behind a private CA the agent does not trust: drop
-    the CA cert at /etc/docker/certs.d/${env.REGISTRY}/ca.crt for docker, or
-    /etc/containers/certs.d/${env.REGISTRY}/ca.crt for podman.
-  - Anonymous push is no longer allowed - see the withCredentials sketch in
-    the stage above.
-  - REGISTRY names the wrong endpoint. https://registry-ui.ds-core-ops.lan/
-    is the web UI; the v2 API pushed to here is a separate host:port."""
+  - 'certificate signed by unknown authority' - a private CA the engine does
+    not trust. Drop the CA cert at
+      /etc/containers/certs.d/${env.REGISTRY}/ca.crt   (podman)
+      /etc/docker/certs.d/${env.REGISTRY}/ca.crt       (docker)
+  - 'unauthorized' or 'authentication required' - anonymous push is no longer
+    allowed; see the withCredentials sketch in the stage above."""
         }
       }
     }
